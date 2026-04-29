@@ -30,7 +30,8 @@ class ConnectivityCheckServiceTest {
         AtomicInteger activeChecks = new AtomicInteger();
         AtomicInteger maxActiveChecks = new AtomicInteger();
 
-        ConnectivityCheckService service = new ConnectivityCheckService(properties, mock(CheckResultRepository.class)) {
+        ScheduledOperationExecutor operationExecutor = new ScheduledOperationExecutor(properties);
+        ConnectivityCheckService service = new ConnectivityCheckService(properties, mock(CheckResultRepository.class), operationExecutor) {
             @Override
             CheckResult executeCheck(Resource resource, Check check) throws IOException, InterruptedException, CertificateException {
                 int active = activeChecks.incrementAndGet();
@@ -45,6 +46,7 @@ class ConnectivityCheckServiceTest {
         };
 
         service.checkAll();
+        operationExecutor.close();
 
         assertThat(maxActiveChecks).hasValue(2);
     }
@@ -104,7 +106,8 @@ class ConnectivityCheckServiceTest {
     }
 
     private ConnectivityCheckService service() {
-        return new ConnectivityCheckService(new ConnectivityMonitorProperties(), mock(CheckResultRepository.class));
+        ConnectivityMonitorProperties properties = new ConnectivityMonitorProperties();
+        return new ConnectivityCheckService(properties, mock(CheckResultRepository.class), new ScheduledOperationExecutor(properties));
     }
 
     private Resource resource() {

@@ -8,6 +8,8 @@ import net.edubovit.connectivity.monitor.data.PersistedCheckResult;
 import net.edubovit.connectivity.monitor.service.CheckHistoryService;
 import net.edubovit.connectivity.monitor.service.CheckHistoryService.AvailabilityView;
 import net.edubovit.connectivity.monitor.service.CheckHistoryService.ResourceView;
+import net.edubovit.connectivity.monitor.service.MetricHistoryService;
+import net.edubovit.connectivity.monitor.service.MetricHistoryService.MetricSeriesView;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -19,8 +21,11 @@ public class MonitorApiController {
 
     private final CheckHistoryService checkHistoryService;
 
-    public MonitorApiController(CheckHistoryService checkHistoryService) {
+    private final MetricHistoryService metricHistoryService;
+
+    public MonitorApiController(CheckHistoryService checkHistoryService, MetricHistoryService metricHistoryService) {
         this.checkHistoryService = checkHistoryService;
+        this.metricHistoryService = metricHistoryService;
     }
 
     @GetMapping("/resources")
@@ -42,6 +47,14 @@ public class MonitorApiController {
             @RequestParam(required = false) String to) {
         TimeRange timeRange = resolveTimeRange(from, to);
         return checkHistoryService.availability(timeRange.from(), timeRange.to());
+    }
+
+    @GetMapping("/metrics")
+    public List<MetricSeriesView> metrics(
+            @RequestParam(required = false) String from,
+            @RequestParam(required = false) String to) {
+        TimeRange timeRange = resolveTimeRange(from, to);
+        return metricHistoryService.metrics(timeRange.from(), timeRange.to());
     }
 
     private TimeRange resolveTimeRange(String from, String to) {

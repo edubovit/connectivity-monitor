@@ -19,11 +19,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.Semaphore;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 import javax.net.ssl.SSLParameters;
@@ -38,9 +39,11 @@ import net.edubovit.connectivity.monitor.config.ConnectivityMonitorProperties.Re
 import net.edubovit.connectivity.monitor.data.CheckResultRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 
 @Service
 public class ConnectivityCheckService {
@@ -51,20 +54,46 @@ public class ConnectivityCheckService {
 
     private final CheckResultRepository resultRepository;
 
+    private final ScheduledOperationExecutor operationExecutor;
+
     private final HttpClient httpClient;
 
-    public ConnectivityCheckService(ConnectivityMonitorProperties properties, CheckResultRepository resultRepository) {
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+
+    private final AtomicBoolean scheduling = new AtomicBoolean(false);
+
+    public ConnectivityCheckService(
+            ConnectivityMonitorProperties properties,
+            CheckResultRepository resultRepository,
+            ScheduledOperationExecutor operationExecutor) {
         this.properties = properties;
         this.resultRepository = resultRepository;
+        this.operationExecutor = operationExecutor;
         this.httpClient = HttpClient.newBuilder()
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
     }
 
-    @Scheduled(
-            fixedDelayString = "${connectivity.interval:60s}",
-            initialDelayString = "${connectivity.initial-delay:0s}"
-    )
+    @PostConstruct
+    public void startScheduledChecks() {
+        List<CheckTask> checkTasks = checkTasks(properties.getResources(), true);
+        if (checkTasks.isEmpty()) {
+            log.warn("No connectivity checks configured");
+            return;
+        }
+
+        scheduling.set(true);
+        Duration initialDelay = nonNegative(properties.getInitialDelay(), Duration.ZERO, "connectivity initial-delay");
+        checkTasks.forEach(checkTask -> scheduleCheck(checkTask, initialDelay));
+        log.info("Scheduled connectivity checks: checks={} initialDelay={}", checkTasks.size(), initialDelay);
+    }
+
+    @PreDestroy
+    public void stopScheduledChecks() {
+        scheduling.set(false);
+        scheduler.shutdownNow();
+    }
+
     public void checkAll() {
         List<Resource> resources = properties.getResources();
         if (resources == null || resources.isEmpty()) {
@@ -72,22 +101,22 @@ public class ConnectivityCheckService {
             return;
         }
 
-        String runId = UUID.randomUUID().toString();
-        List<CheckTask> checkTasks = checkTasks(resources);
+        List<CheckTask> checkTasks = checkTasks(resources, false);
         if (checkTasks.isEmpty()) {
             log.warn("No connectivity checks configured");
             return;
         }
 
-        int concurrency = concurrencyLimit();
-        log.info("Starting connectivity checks: resources={} checks={} concurrency={}",
-                resources.size(), checkTasks.size(), concurrency);
-        runChecks(runId, checkTasks, concurrency);
+        log.info("Starting connectivity checks: resources={} checks={}", resources.size(), checkTasks.size());
+        runChecks(checkTasks);
         log.info("Finished connectivity checks: resources={} checks={}", resources.size(), checkTasks.size());
     }
 
-    private List<CheckTask> checkTasks(List<Resource> resources) {
+    private List<CheckTask> checkTasks(List<Resource> resources, boolean requireIntervals) {
         List<CheckTask> checkTasks = new ArrayList<>();
+        if (resources == null) {
+            return checkTasks;
+        }
         for (Resource resource : resources) {
             List<Check> checks = resource.getChecks();
             if (checks == null || checks.isEmpty()) {
@@ -95,40 +124,59 @@ public class ConnectivityCheckService {
                 continue;
             }
 
-            checks.stream()
-                    .map(check -> new CheckTask(resource, check))
-                    .forEach(checkTasks::add);
+            for (Check check : checks) {
+                if (requireIntervals) {
+                    validateScheduledCheck(resource, check);
+                }
+                checkTasks.add(new CheckTask(resource, check));
+            }
         }
         return checkTasks;
     }
 
-    private void runChecks(String runId, List<CheckTask> checkTasks, int concurrency) {
-        Semaphore semaphore = new Semaphore(concurrency);
-        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            List<Future<?>> futures = new ArrayList<>();
-            for (CheckTask checkTask : checkTasks) {
-                futures.add(executor.submit(() -> runCheckWithPermit(runId, checkTask, semaphore)));
+    private void scheduleCheck(CheckTask checkTask, Duration delay) {
+        if (!scheduling.get()) {
+            return;
+        }
+        try {
+            scheduler.schedule(() -> submitScheduledCheck(checkTask), Math.max(delay.toMillis(), 0L), TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException ex) {
+            if (scheduling.get()) {
+                log.warn("Unable to schedule connectivity check: resource={} check={}",
+                        checkTask.resource().getName(), checkTask.check().getName(), ex);
             }
-
-            awaitChecks(futures);
         }
     }
 
-    private void runCheckWithPermit(String runId, CheckTask checkTask, Semaphore semaphore) {
-        boolean acquired = false;
+    private void submitScheduledCheck(CheckTask checkTask) {
+        if (!scheduling.get()) {
+            return;
+        }
         try {
-            semaphore.acquire();
-            acquired = true;
-            check(runId, checkTask.resource(), checkTask.check());
-        } catch (InterruptedException ex) {
-            Thread.currentThread().interrupt();
-            log.warn("Connectivity check task interrupted before execution: resource={} check={}",
-                    checkTask.resource().getName(), checkTask.check().getName());
-        } finally {
-            if (acquired) {
-                semaphore.release();
+            operationExecutor.submit(operationDescription(checkTask), () -> {
+                try {
+                    check(UUID.randomUUID().toString(), checkTask.resource(), checkTask.check());
+                } finally {
+                    scheduleCheck(checkTask, interval(checkTask.check()));
+                }
+            });
+        } catch (RejectedExecutionException ex) {
+            if (scheduling.get()) {
+                log.warn("Unable to submit connectivity check: resource={} check={}",
+                        checkTask.resource().getName(), checkTask.check().getName(), ex);
+                scheduleCheck(checkTask, interval(checkTask.check()));
             }
         }
+    }
+
+    private void runChecks(List<CheckTask> checkTasks) {
+        List<Future<?>> futures = new ArrayList<>();
+        for (CheckTask checkTask : checkTasks) {
+            futures.add(operationExecutor.submit(operationDescription(checkTask),
+                    () -> check(UUID.randomUUID().toString(), checkTask.resource(), checkTask.check())));
+        }
+
+        awaitChecks(futures);
     }
 
     private void awaitChecks(List<Future<?>> futures) {
@@ -143,15 +191,6 @@ public class ConnectivityCheckService {
                 log.warn("Connectivity check task failed unexpectedly", ex.getCause());
             }
         }
-    }
-
-    private int concurrencyLimit() {
-        int configuredConcurrency = properties.getConcurrency();
-        if (configuredConcurrency < 1) {
-            log.warn("Invalid connectivity concurrency configured: {}. Using 1 instead", configuredConcurrency);
-            return 1;
-        }
-        return configuredConcurrency;
     }
 
     private void check(String runId, Resource resource, Check check) {
@@ -351,6 +390,28 @@ public class ConnectivityCheckService {
         return check.getTimeout() == null ? Duration.ofSeconds(10) : check.getTimeout();
     }
 
+    private Duration interval(Check check) {
+        return positive(check.getInterval(), "check interval");
+    }
+
+    private void validateScheduledCheck(Resource resource, Check check) {
+        require(StringUtils.hasText(resource.getName()), "resource name is required");
+        require(StringUtils.hasText(check.getName()), "check name is required");
+        require(check.getType() != null, "check type is required");
+        positive(check.getInterval(), "check interval");
+    }
+
+    private Duration positive(Duration duration, String name) {
+        require(duration != null && !duration.isZero() && !duration.isNegative(), name + " must be greater than zero");
+        return duration;
+    }
+
+    private Duration nonNegative(Duration duration, Duration fallback, String name) {
+        Duration resolved = duration == null ? fallback : duration;
+        require(!resolved.isNegative(), name + " must not be negative");
+        return resolved;
+    }
+
     private int timeoutMillis(Check check) {
         long millis = timeout(check).toMillis();
         return Math.toIntExact(Math.clamp(millis, 1L, Integer.MAX_VALUE));
@@ -378,6 +439,11 @@ public class ConnectivityCheckService {
 
     private String checkTypeName(CheckType type) {
         return type == null ? "UNKNOWN" : type.name();
+    }
+
+    private String operationDescription(CheckTask checkTask) {
+        return "connectivity check resource=%s check=%s".formatted(
+                checkTask.resource().getName(), checkTask.check().getName());
     }
 
     private record CheckTask(Resource resource, Check check) {

@@ -64,6 +64,26 @@ public class CheckResultRepository {
                 to.toEpochMilli());
     }
 
+    public List<PersistedCheckResult> findUntil(Instant to) {
+        return jdbcTemplate.query("""
+                        SELECT id,
+                               run_id,
+                               resource_name,
+                               check_name,
+                               check_type,
+                               checked_at_epoch_ms,
+                               successful,
+                               duration_ms,
+                               details,
+                               error_message
+                        FROM check_results
+                        WHERE checked_at_epoch_ms <= ?
+                        ORDER BY checked_at_epoch_ms ASC, id ASC
+                        """,
+                this::mapResult,
+                to.toEpochMilli());
+    }
+
     private PersistedCheckResult mapResult(ResultSet rs, int rowNum) throws SQLException {
         return new PersistedCheckResult(
                 rs.getLong("id"),

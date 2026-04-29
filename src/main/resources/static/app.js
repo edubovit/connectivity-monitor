@@ -10,6 +10,7 @@ const state = {
 
 const cards = document.querySelector('#cards');
 const statusGraph = document.querySelector('#status-graph');
+const metricsGraph = document.querySelector('#metrics-graph');
 const message = document.querySelector('#message');
 const rangeLabel = document.querySelector('#range-label');
 const fromInput = document.querySelector('#from');
@@ -89,11 +90,15 @@ async function load(options = {}) {
 
     try {
         const query = `from=${encodeURIComponent(state.from)}&to=${encodeURIComponent(state.to)}`;
-        const availability = await fetchJson(apiUrl(`api/availability?${query}`));
+        const [availability, metrics] = await Promise.all([
+            fetchJson(apiUrl(`api/availability?${query}`)),
+            fetchJson(apiUrl(`api/metrics?${query}`)),
+        ]);
         const filteredAvailability = filterResources(availability);
 
         renderCards(filteredAvailability);
         renderStatusGraph(filteredAvailability);
+        renderMetrics(metrics);
     } catch (error) {
         showMessage(error.message, true);
     } finally {
@@ -137,6 +142,14 @@ function apiUrl(path) {
 function renderCards(availability) {
     cards.replaceChildren();
     const template = document.querySelector('#card-template');
+
+    if (availability.length === 0) {
+        const empty = document.createElement('article');
+        empty.className = 'card empty-card';
+        empty.innerHTML = `<h2>No resources match</h2><p class="subtitle">Adjust the resource filter or selected time range.</p>`;
+        cards.append(empty);
+        return;
+    }
 
     availability.forEach((item) => {
         const node = template.content.cloneNode(true);
@@ -241,6 +254,23 @@ function renderStatusGraph(availability) {
         <span class="axis-end">${formatTime(state.to)}</span>`;
     statusGraph.append(axis);
 
+    if (availability.length === 0) {
+        const row = document.createElement('div');
+        row.className = 'graph-row';
+        const label = document.createElement('div');
+        label.className = 'graph-label';
+        label.innerHTML = '<strong>No resources match</strong><span>Adjust the filter</span>';
+        const track = document.createElement('div');
+        track.className = 'graph-track';
+        const empty = document.createElement('span');
+        empty.className = 'graph-empty';
+        empty.textContent = 'No resource timelines to display';
+        track.append(empty);
+        row.append(label, track);
+        statusGraph.append(row);
+        return;
+    }
+
     availability.forEach((resource) => {
         const row = document.createElement('div');
         row.className = 'graph-row';
@@ -290,6 +320,148 @@ function renderStatusGraph(availability) {
         row.append(label, track);
         statusGraph.append(row);
     });
+}
+
+function renderMetrics(metrics) {
+    metricsGraph.replaceChildren();
+
+    if (!metrics || metrics.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'metric-empty panel-empty';
+        empty.textContent = 'No metrics configured.';
+        metricsGraph.append(empty);
+        return;
+    }
+
+    const fromMs = new Date(state.from).getTime();
+    const toMs = new Date(state.to).getTime();
+    const rangeMs = Math.max(toMs - fromMs, 1);
+
+    metrics.forEach((metric) => {
+        const samples = (metric.samples || [])
+                .sort((left, right) => new Date(left.measuredAt) - new Date(right.measuredAt));
+        const valueSamples = samples.filter((sample) => sample.successful && Number.isFinite(sample.value));
+        const errorSamples = samples.filter((sample) => !sample.successful || !Number.isFinite(sample.value));
+
+        const card = document.createElement('article');
+        card.className = 'metric-card';
+
+        const header = document.createElement('div');
+        header.className = 'metric-card-header';
+
+        const titleGroup = document.createElement('div');
+        const title = document.createElement('h3');
+        title.textContent = metric.name;
+        const meta = document.createElement('p');
+        meta.className = 'subtitle';
+        meta.textContent = metric.unit ? `Unit: ${metric.unit}` : 'No unit';
+        titleGroup.append(title, meta);
+
+        const latest = valueSamples.at(-1);
+        const latestValue = document.createElement('div');
+        latestValue.className = 'metric-latest';
+        latestValue.textContent = latest ? formatMetricValue(latest.value, metric.unit) : 'N/A';
+        header.append(titleGroup, latestValue);
+
+        const chart = document.createElement('div');
+        chart.className = 'metric-chart';
+        chart.setAttribute('role', 'img');
+        chart.setAttribute('aria-label', `${metric.name} metric chart`);
+
+        if (samples.length === 0) {
+            const empty = document.createElement('span');
+            empty.className = 'metric-chart-empty';
+            empty.textContent = 'No samples in range';
+            chart.append(empty);
+        } else {
+            renderMetricChart(chart, valueSamples, errorSamples, metric, fromMs, toMs, rangeMs);
+        }
+
+        const footer = document.createElement('div');
+        footer.className = 'metric-footer';
+        footer.innerHTML = `
+            <span>${valueSamples.length} values</span>
+            <span>${errorSamples.length} errors</span>`;
+
+        card.append(header, chart, footer);
+        metricsGraph.append(card);
+    });
+}
+
+function renderMetricChart(chart, valueSamples, errorSamples, metric, fromMs, toMs, rangeMs) {
+    if (valueSamples.length === 0) {
+        const empty = document.createElement('span');
+        empty.className = 'metric-chart-empty';
+        empty.textContent = 'No numeric samples in range';
+        chart.append(empty);
+        return;
+    }
+
+    const values = valueSamples.map((sample) => sample.value);
+    const actualMinValue = Math.min(...values);
+    const actualMaxValue = Math.max(...values);
+    let chartMinValue = actualMinValue;
+    let chartMaxValue = actualMaxValue;
+    const constantValue = actualMinValue === actualMaxValue;
+    if (constantValue) {
+        const padding = Math.max(Math.abs(actualMinValue) * 0.1, 1);
+        chartMinValue -= padding;
+        chartMaxValue += padding;
+    }
+    const valueRange = Math.max(chartMaxValue - chartMinValue, 1);
+
+    const lineSamples = downsampleSamples(valueSamples, 500);
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.classList.add('metric-line-svg');
+    svg.setAttribute('viewBox', '0 0 100 100');
+    svg.setAttribute('preserveAspectRatio', 'none');
+
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.classList.add('metric-line');
+    path.setAttribute('d', lineSamples.map((sample, index) => {
+        const point = metricPoint(sample, fromMs, rangeMs, chartMinValue, valueRange);
+        return `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(3)} ${point.y.toFixed(3)}`;
+    }).join(' '));
+    svg.append(path);
+    chart.append(svg);
+
+    const topLabel = document.createElement('span');
+    topLabel.className = 'metric-axis-label top';
+    topLabel.textContent = formatMetricValue(actualMaxValue, metric.unit);
+    chart.append(topLabel);
+
+    if (!constantValue) {
+        const bottomLabel = document.createElement('span');
+        bottomLabel.className = 'metric-axis-label bottom';
+        bottomLabel.textContent = formatMetricValue(actualMinValue, metric.unit);
+        chart.append(bottomLabel);
+    }
+}
+
+function downsampleSamples(samples, limit) {
+    if (samples.length <= limit) {
+        return samples;
+    }
+
+    const selected = [];
+    const step = (samples.length - 1) / (limit - 1);
+    let lastIndex = -1;
+    for (let i = 0; i < limit; i += 1) {
+        const index = Math.min(Math.round(i * step), samples.length - 1);
+        if (index !== lastIndex) {
+            selected.push(samples[index]);
+            lastIndex = index;
+        }
+    }
+    return selected;
+}
+
+function metricPoint(sample, fromMs, rangeMs, minValue, valueRange) {
+    const measuredAtMs = new Date(sample.measuredAt).getTime();
+    const x = clamp(((measuredAtMs - fromMs) / rangeMs) * 100, 0, 100);
+    const normalized = (sample.value - minValue) / valueRange;
+    const y = clamp(90 - normalized * 78, 8, 92);
+    return {x, y};
 }
 
 function buildVisibleStatusRuns(samples, fromMs, toMs) {
@@ -404,6 +576,19 @@ function showMessage(text, error) {
 
 function formatPercent(value) {
     return value === null || value === undefined ? 'N/A' : `${value.toFixed(2)}%`;
+}
+
+function formatMetricValue(value, unit) {
+    if (!Number.isFinite(value)) {
+        return 'N/A';
+    }
+    const absolute = Math.abs(value);
+    const formatted = absolute >= 100
+            ? value.toFixed(0)
+            : absolute >= 10
+                    ? value.toFixed(1)
+                    : value.toFixed(2);
+    return unit ? `${formatted} ${unit}` : formatted;
 }
 
 function formatDateTime(value) {

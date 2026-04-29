@@ -49,6 +49,7 @@ body {
 
 h1,
 h2,
+h3,
 p {
     margin: 0;
 }
@@ -220,6 +221,14 @@ input {
 
 .card {
     padding: 20px;
+}
+
+.empty-card {
+    display: grid;
+    gap: 8px;
+    min-height: 140px;
+    place-content: center;
+    text-align: center;
 }
 
 .card-header {
@@ -484,6 +493,109 @@ input {
     padding: 11px 14px;
 }
 
+.panel-empty {
+    grid-column: 1 / -1;
+    color: var(--muted);
+    padding: 8px 0;
+}
+
+.metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+    gap: 16px;
+    margin-top: 18px;
+}
+
+.metric-card {
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    background: #0b1324;
+    padding: 16px;
+}
+
+.metric-card-header,
+.metric-footer {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.metric-card h3 {
+    font-size: 1rem;
+    overflow-wrap: anywhere;
+}
+
+.metric-latest {
+    color: var(--blue);
+    font-size: 1.35rem;
+    font-weight: 900;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.metric-chart {
+    position: relative;
+    height: 190px;
+    margin-top: 16px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background:
+            linear-gradient(90deg, transparent 0 49.8%, rgb(255 255 255 / 0.07) 49.8% 50.2%, transparent 50.2% 100%),
+            linear-gradient(0deg, transparent 0 49.8%, rgb(255 255 255 / 0.07) 49.8% 50.2%, transparent 50.2% 100%),
+            #081120;
+}
+
+.metric-line-svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+}
+
+.metric-line {
+    fill: none;
+    stroke: var(--blue);
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.35;
+    vector-effect: non-scaling-stroke;
+}
+
+.metric-axis-label {
+    position: absolute;
+    right: 10px;
+    max-width: calc(100% - 20px);
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-weight: 800;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.metric-axis-label.top {
+    top: 8px;
+}
+
+.metric-axis-label.bottom {
+    bottom: 8px;
+}
+
+.metric-chart-empty {
+    display: inline-block;
+    color: var(--muted);
+    padding: 14px;
+}
+
+.metric-footer {
+    margin-top: 10px;
+    color: var(--muted);
+    font-size: 0.8rem;
+    font-weight: 800;
+}
+
 .status-dot {
     width: 12px;
     height: 12px;
@@ -581,6 +693,16 @@ input {
         align-items: start;
         flex-direction: row;
         flex-wrap: wrap;
+    }
+
+    .metric-card-header,
+    .metric-footer {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .metric-latest {
+        text-align: left;
     }
 
     .graph-axis,

@@ -14,7 +14,6 @@ server:
   port: 20001
 
 connectivity:
-  interval: 60s
   initial-delay: 0s
   concurrency: 10
   resources:
@@ -25,25 +24,31 @@ connectivity:
           url: https://www.google.com/
           expected-status: 200
           require-non-empty-body: true
+          interval: 60s
           timeout: 5s
         - name: host-ping
           type: REACHABILITY
           host: google.com
+          interval: 60s
           timeout: 5s
         - name: https-tcp-connect
           type: TCP_CONNECT
           host: www.google.com
           port: 443
+          interval: 60s
           timeout: 5s
         - name: https-tls-certificate
           type: TLS_CERTIFICATE
           host: www.google.com
           port: 443
+          interval: 60s
           timeout: 5s
         - name: dns-lookup
           type: DNS_LOOKUP
           host: www.google.com
+          interval: 60s
           timeout: 5s
+  metrics: []
 
 logging:
   level:

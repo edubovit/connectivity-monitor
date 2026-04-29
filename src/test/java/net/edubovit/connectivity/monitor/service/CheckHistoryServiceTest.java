@@ -24,7 +24,7 @@ class CheckHistoryServiceTest {
         Instant from = Instant.parse("2026-04-28T10:00:00Z");
         Instant to = Instant.parse("2026-04-28T10:10:00Z");
         CheckResultRepository repository = mock(CheckResultRepository.class);
-        when(repository.findBetween(from, to)).thenReturn(List.of(
+        when(repository.findUntil(to)).thenReturn(List.of(
                 result(1, "run-1", "homepage-get", true, "2026-04-28T10:01:00Z"),
                 result(2, "run-1", "host-ping", false, "2026-04-28T10:01:01Z"),
                 result(3, "run-2", "homepage-get", true, "2026-04-28T10:02:00Z"),
@@ -35,12 +35,12 @@ class CheckHistoryServiceTest {
         assertThat(service.availability(from, to))
                 .singleElement()
                 .satisfies(availability -> {
-                    assertThat(availability.totalSamples()).isEqualTo(2);
+                    assertThat(availability.totalSamples()).isEqualTo(3);
                     assertThat(availability.onlineSamples()).isEqualTo(1);
-                    assertThat(availability.availabilityPercent()).isEqualTo(50.0);
+                    assertThat(availability.availabilityPercent()).isEqualTo(100.0 / 3.0);
                     assertThat(availability.online()).isTrue();
                     assertThat(availability.timeline()).extracting(CheckHistoryService.ResourceStatusSample::online)
-                            .containsExactly(false, true);
+                            .containsExactly(false, false, true);
                     assertThat(availability.timeline().getFirst().failedChecks())
                             .singleElement()
                             .satisfies(failedCheck -> {
@@ -50,7 +50,7 @@ class CheckHistoryServiceTest {
                                 assertThat(failedCheck.durationMs()).isEqualTo(100);
                                 assertThat(failedCheck.details()).isEqualTo("details");
                             });
-                    assertThat(availability.timeline().get(1).failedChecks()).isEmpty();
+                    assertThat(availability.timeline().get(2).failedChecks()).isEmpty();
                 });
     }
 
@@ -59,7 +59,7 @@ class CheckHistoryServiceTest {
         Instant from = Instant.parse("2026-04-28T12:00:00Z");
         Instant to = Instant.parse("2026-04-28T12:10:00Z");
         CheckResultRepository repository = mock(CheckResultRepository.class);
-        when(repository.findBetween(from, to)).thenReturn(List.of(
+        when(repository.findUntil(to)).thenReturn(List.of(
                 result(1, "run-1", "homepage-get", true, "2026-04-28T12:00:00Z"),
                 result(2, "run-1", "host-ping", false, "2026-04-28T12:00:00Z"),
                 result(3, "run-2", "homepage-get", true, "2026-04-28T12:01:00Z"),
@@ -85,11 +85,73 @@ class CheckHistoryServiceTest {
         assertThat(failedCheck.failureDurationMs()).isEqualTo(Duration.ofMinutes(4).toMillis());
     }
 
+    @Test
+    void resourceStateUsesLatestKnownCheckResultsAtEachCheckTimestamp() {
+        Instant from = Instant.parse("2026-04-28T13:00:00Z");
+        Instant to = Instant.parse("2026-04-28T13:10:00Z");
+        CheckResultRepository repository = mock(CheckResultRepository.class);
+        when(repository.findUntil(to)).thenReturn(List.of(
+                result(1, "run-1", "homepage-get", true, "2026-04-28T12:59:00Z"),
+                result(2, "run-2", "host-ping", true, "2026-04-28T12:59:30Z"),
+                result(3, "run-3", "homepage-get", false, "2026-04-28T13:01:00Z"),
+                result(4, "run-4", "host-ping", true, "2026-04-28T13:02:00Z"),
+                result(5, "run-5", "homepage-get", true, "2026-04-28T13:03:00Z")));
+
+        CheckHistoryService service = new CheckHistoryService(propertiesWithTwoChecks(), repository);
+
+        assertThat(service.availability(from, to))
+                .singleElement()
+                .satisfies(availability -> {
+                    assertThat(availability.timeline()).extracting(CheckHistoryService.ResourceStatusSample::online)
+                            .containsExactly(false, false, true);
+                    assertThat(availability.checks()).extracting(CheckHistoryService.CheckAvailabilityView::online)
+                            .containsExactly(true, true);
+                });
+    }
+
+    @Test
+    void staleResultsForUnconfiguredChecksAndResourcesAreHiddenAndIgnored() {
+        Instant from = Instant.parse("2026-04-28T14:00:00Z");
+        Instant to = Instant.parse("2026-04-28T14:10:00Z");
+        CheckResultRepository repository = mock(CheckResultRepository.class);
+        when(repository.findUntil(to)).thenReturn(List.of(
+                result(1, "run-1", "homepage-get", true, "2026-04-28T14:01:00Z"),
+                result(2, "run-2", "host-ping", true, "2026-04-28T14:01:10Z"),
+                result(3, "run-stale", "removed-check", false, "2026-04-28T14:02:00Z"),
+                result(4, "old-resource", "run-old", "legacy-check", false, "2026-04-28T14:03:00Z"),
+                result(5, "run-3", "homepage-get", true, "2026-04-28T14:04:00Z")));
+
+        CheckHistoryService service = new CheckHistoryService(propertiesWithTwoChecks(), repository);
+
+        assertThat(service.availability(from, to))
+                .singleElement()
+                .satisfies(availability -> {
+                    assertThat(availability.resourceName()).isEqualTo("example-resource");
+                    assertThat(availability.totalSamples()).isEqualTo(2);
+                    assertThat(availability.onlineSamples()).isEqualTo(2);
+                    assertThat(availability.timeline()).extracting(CheckHistoryService.ResourceStatusSample::online)
+                            .containsExactly(true, true);
+                    assertThat(availability.checks()).extracting(CheckHistoryService.CheckAvailabilityView::checkName)
+                            .containsExactly("homepage-get", "host-ping");
+                    assertThat(availability.timeline()).allSatisfy(sample -> assertThat(sample.failedChecks()).isEmpty());
+                });
+    }
+
     private PersistedCheckResult result(long id, String runId, String checkName, boolean successful, String checkedAt) {
+        return result(id, "example-resource", runId, checkName, successful, checkedAt);
+    }
+
+    private PersistedCheckResult result(
+            long id,
+            String resourceName,
+            String runId,
+            String checkName,
+            boolean successful,
+            String checkedAt) {
         return new PersistedCheckResult(
                 id,
                 runId,
-                "example-resource",
+                resourceName,
                 checkName,
                 checkName.equals("homepage-get") ? "HTTP_GET" : "REACHABILITY",
                 Instant.parse(checkedAt),

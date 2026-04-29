@@ -6,7 +6,6 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -48,7 +47,7 @@ public class CheckHistoryService {
     }
 
     public List<AvailabilityView> availability(Instant from, Instant to) {
-        List<PersistedCheckResult> results = results(from, to);
+        List<PersistedCheckResult> results = resultRepository.findUntil(to);
         Map<String, List<PersistedCheckResult>> resultsByResource = results.stream()
                 .collect(Collectors.groupingBy(PersistedCheckResult::resourceName, LinkedHashMap::new, Collectors.toList()));
 
@@ -57,69 +56,83 @@ public class CheckHistoryService {
 
         List<AvailabilityView> availability = new ArrayList<>();
         for (ResourceView resource : configuredResources.values()) {
-            availability.add(toAvailability(resource, resultsByResource.getOrDefault(resource.name(), List.of())));
-        }
-
-        for (Map.Entry<String, List<PersistedCheckResult>> entry : resultsByResource.entrySet()) {
-            if (!configuredResources.containsKey(entry.getKey())) {
-                PersistedCheckResult first = entry.getValue().getFirst();
-                availability.add(toAvailability(new ResourceView(first.resourceName(), List.of()),
-                        entry.getValue()));
-            }
+            availability.add(toAvailability(resource, resultsByResource.getOrDefault(resource.name(), List.of()), from));
         }
 
         return availability;
     }
 
-    private AvailabilityView toAvailability(ResourceView resource, List<PersistedCheckResult> results) {
-        List<ResourceStatusSample> timeline = resourceTimeline(resource, results);
+    private AvailabilityView toAvailability(ResourceView resource, List<PersistedCheckResult> results, Instant from) {
+        List<PersistedCheckResult> rangeResults = results.stream()
+                .filter(result -> !result.checkedAt().isBefore(from))
+                .toList();
+        List<ResourceStatusSample> timeline = resourceTimeline(resource, results, from);
         long totalSamples = timeline.size();
         long onlineSamples = timeline.stream().filter(ResourceStatusSample::online).count();
         Double percentage = totalSamples == 0 ? null : onlineSamples * 100.0 / totalSamples;
         Boolean online = timeline.isEmpty() ? null : timeline.getLast().online();
 
-        Map<String, List<PersistedCheckResult>> resultsByCheck = results.stream()
+        Map<String, List<PersistedCheckResult>> resultsByCheck = rangeResults.stream()
+                .collect(Collectors.groupingBy(PersistedCheckResult::checkName, LinkedHashMap::new, Collectors.toList()));
+        Map<String, List<PersistedCheckResult>> allResultsByCheck = results.stream()
                 .collect(Collectors.groupingBy(PersistedCheckResult::checkName, LinkedHashMap::new, Collectors.toList()));
         Map<String, CheckView> configuredChecks = resource.checks().stream()
                 .collect(Collectors.toMap(CheckView::name, Function.identity(), (left, right) -> left, LinkedHashMap::new));
 
         List<CheckAvailabilityView> checks = new ArrayList<>();
         for (CheckView check : configuredChecks.values()) {
-            checks.add(toCheckAvailability(check, resultsByCheck.getOrDefault(check.name(), List.of())));
-        }
-        for (Map.Entry<String, List<PersistedCheckResult>> entry : resultsByCheck.entrySet()) {
-            if (!configuredChecks.containsKey(entry.getKey())) {
-                PersistedCheckResult first = entry.getValue().getFirst();
-                checks.add(toCheckAvailability(new CheckView(first.checkName(), first.checkType(), first.checkName()), entry.getValue()));
-            }
+            checks.add(toCheckAvailability(
+                    check,
+                    resultsByCheck.getOrDefault(check.name(), List.of()),
+                    allResultsByCheck.getOrDefault(check.name(), List.of())));
         }
 
         return new AvailabilityView(resource.name(), totalSamples, onlineSamples, percentage, online, timeline, checks);
     }
 
-    private List<ResourceStatusSample> resourceTimeline(ResourceView resource, List<PersistedCheckResult> results) {
+    private List<ResourceStatusSample> resourceTimeline(ResourceView resource, List<PersistedCheckResult> results, Instant from) {
         if (results.isEmpty()) {
             return List.of();
         }
 
         Map<Long, FailurePeriod> failurePeriods = failurePeriodsByResult(results);
-        Set<String> configuredCheckNames = resource.checks().stream()
+        Set<String> requiredCheckNames = resource.checks().stream()
                 .map(CheckView::name)
                 .collect(Collectors.toSet());
-        Map<String, List<PersistedCheckResult>> resultsByRun = results.stream()
-                .collect(Collectors.groupingBy(this::runKey, LinkedHashMap::new, Collectors.toList()));
+        if (requiredCheckNames.isEmpty()) {
+            return List.of();
+        }
 
-        return resultsByRun.values().stream()
-                .map(runResults -> toResourceStatusSample(resource, configuredCheckNames, failurePeriods, runResults))
-                .flatMap(Optional::stream)
-                .sorted(Comparator.comparing(ResourceStatusSample::checkedAt))
+        Map<String, PersistedCheckResult> latestResultsByCheck = new LinkedHashMap<>();
+        List<ResourceStatusSample> timeline = new ArrayList<>();
+        List<PersistedCheckResult> sortedResults = results.stream()
+                .sorted(Comparator.comparing(PersistedCheckResult::checkedAt).thenComparing(PersistedCheckResult::id))
                 .toList();
+        for (PersistedCheckResult result : sortedResults) {
+            if (!requiredCheckNames.contains(result.checkName())) {
+                continue;
+            }
+
+            latestResultsByCheck.put(result.checkName(), result);
+            if (!latestResultsByCheck.keySet().containsAll(requiredCheckNames) || result.checkedAt().isBefore(from)) {
+                continue;
+            }
+
+            boolean online = requiredCheckNames.stream()
+                    .allMatch(checkName -> latestResultsByCheck.get(checkName).successful());
+            List<FailedCheckView> failedChecks = online
+                    ? List.of()
+                    : failedChecks(resource, failurePeriods, latestResultsByCheck, requiredCheckNames, result.checkedAt());
+            timeline.add(new ResourceStatusSample(runKey(result), result.checkedAt(), online, failedChecks));
+        }
+
+        return timeline;
     }
 
     private Map<Long, FailurePeriod> failurePeriodsByResult(List<PersistedCheckResult> results) {
         Map<Long, FailurePeriod> periods = new LinkedHashMap<>();
         Map<String, List<PersistedCheckResult>> resultsByCheck = results.stream()
-                .collect(Collectors.groupingBy(PersistedCheckResult::checkName, LinkedHashMap::new, Collectors.toList()));
+                .collect(Collectors.groupingBy(this::checkKey, LinkedHashMap::new, Collectors.toList()));
 
         for (List<PersistedCheckResult> checkResults : resultsByCheck.values()) {
             List<PersistedCheckResult> sortedResults = checkResults.stream()
@@ -154,53 +167,25 @@ public class CheckHistoryService {
         }
     }
 
-    private Optional<ResourceStatusSample> toResourceStatusSample(
-            ResourceView resource,
-            Set<String> configuredCheckNames,
-            Map<Long, FailurePeriod> failurePeriods,
-            List<PersistedCheckResult> runResults) {
-        Map<String, List<PersistedCheckResult>> resultsByCheck = runResults.stream()
-                .collect(Collectors.groupingBy(PersistedCheckResult::checkName, LinkedHashMap::new, Collectors.toList()));
-
-        if (!configuredCheckNames.isEmpty() && !resultsByCheck.keySet().containsAll(configuredCheckNames)) {
-            return Optional.empty();
-        }
-
-        boolean everyConfiguredCheckPassed = configuredCheckNames.isEmpty()
-                ? runResults.stream().allMatch(PersistedCheckResult::successful)
-                : configuredCheckNames.stream()
-                        .allMatch(checkName -> resultsByCheck.getOrDefault(checkName, List.of()).stream()
-                                .allMatch(PersistedCheckResult::successful));
-        boolean noCheckFailed = runResults.stream().allMatch(PersistedCheckResult::successful);
-        boolean online = everyConfiguredCheckPassed && noCheckFailed;
-        Instant checkedAt = runResults.stream()
-                .map(PersistedCheckResult::checkedAt)
-                .max(Comparator.naturalOrder())
-                .orElse(Instant.EPOCH);
-        String runId = runResults.stream()
-                .map(PersistedCheckResult::runId)
-                .filter(run -> run != null && !run.isBlank())
-                .findFirst()
-                .orElse("legacy-" + runResults.getFirst().id());
-
-        List<FailedCheckView> failedChecks = online ? List.of() : failedChecks(resource, failurePeriods, runResults);
-        return Optional.of(new ResourceStatusSample(runId, checkedAt, online, failedChecks));
-    }
-
     private List<FailedCheckView> failedChecks(
             ResourceView resource,
             Map<Long, FailurePeriod> failurePeriods,
-            List<PersistedCheckResult> runResults) {
+            Map<String, PersistedCheckResult> latestResultsByCheck,
+            Set<String> requiredCheckNames,
+            Instant sampleAt) {
         Map<String, CheckView> checksByName = resource.checks().stream()
                 .collect(Collectors.toMap(CheckView::name, Function.identity(), (left, right) -> left, LinkedHashMap::new));
 
-        return runResults.stream()
-                .filter(result -> !result.successful())
+        return requiredCheckNames.stream()
+                .map(latestResultsByCheck::get)
+                .filter(result -> result != null && !result.successful())
                 .map(result -> {
                     CheckView check = checksByName.get(result.checkName());
                     String target = check == null ? result.checkName() : check.target();
                     FailurePeriod period = failurePeriods.getOrDefault(result.id(),
                             new FailurePeriod(result.checkedAt(), result.checkedAt(), 0L));
+                    Instant failureEndedAt = period.endedAt().isBefore(sampleAt) ? sampleAt : period.endedAt();
+                    long failureDurationMs = Math.max(failureEndedAt.toEpochMilli() - period.startedAt().toEpochMilli(), 0L);
                     return new FailedCheckView(
                             result.checkName(),
                             result.checkType(),
@@ -208,8 +193,8 @@ public class CheckHistoryService {
                             result.checkedAt(),
                             result.durationMs(),
                             period.startedAt(),
-                            period.endedAt(),
-                            period.durationMs(),
+                            failureEndedAt,
+                            failureDurationMs,
                             result.details(),
                             result.errorMessage());
                 })
@@ -220,6 +205,10 @@ public class CheckHistoryService {
         return result.runId() == null || result.runId().isBlank()
                 ? "legacy-" + result.id()
                 : result.runId();
+    }
+
+    private String checkKey(PersistedCheckResult result) {
+        return result.resourceName() + "\0" + result.checkName();
     }
 
     private List<CheckView> checks(Resource resource) {
@@ -246,11 +235,14 @@ public class CheckHistoryService {
         return check.getHost();
     }
 
-    private CheckAvailabilityView toCheckAvailability(CheckView check, List<PersistedCheckResult> results) {
-        long total = results.size();
-        long successful = results.stream().filter(PersistedCheckResult::successful).count();
+    private CheckAvailabilityView toCheckAvailability(
+            CheckView check,
+            List<PersistedCheckResult> rangeResults,
+            List<PersistedCheckResult> allResults) {
+        long total = rangeResults.size();
+        long successful = rangeResults.stream().filter(PersistedCheckResult::successful).count();
         Double percentage = total == 0 ? null : successful * 100.0 / total;
-        Boolean online = results.isEmpty() ? null : results.getLast().successful();
+        Boolean online = allResults.isEmpty() ? null : allResults.getLast().successful();
         return new CheckAvailabilityView(check.name(), check.type(), check.target(), total, successful, percentage, online);
     }
 

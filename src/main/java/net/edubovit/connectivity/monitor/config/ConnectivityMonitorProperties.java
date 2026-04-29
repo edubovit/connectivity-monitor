@@ -10,21 +10,13 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "connectivity")
 public class ConnectivityMonitorProperties {
 
-    private Duration interval = Duration.ofSeconds(60);
-
     private Duration initialDelay = Duration.ZERO;
 
     private int concurrency = 10;
 
     private List<Resource> resources = defaultResources();
 
-    public Duration getInterval() {
-        return interval;
-    }
-
-    public void setInterval(Duration interval) {
-        this.interval = interval;
-    }
+    private List<Metric> metrics = new ArrayList<>();
 
     public Duration getInitialDelay() {
         return initialDelay;
@@ -50,6 +42,14 @@ public class ConnectivityMonitorProperties {
         this.resources = resources;
     }
 
+    public List<Metric> getMetrics() {
+        return metrics;
+    }
+
+    public void setMetrics(List<Metric> metrics) {
+        this.metrics = metrics;
+    }
+
     private static List<Resource> defaultResources() {
         Check homepage = new Check();
         homepage.setName("homepage-get");
@@ -57,28 +57,38 @@ public class ConnectivityMonitorProperties {
         homepage.setUrl(URI.create("https://www.google.com/"));
         homepage.setExpectedStatus(200);
         homepage.setRequireNonEmptyBody(true);
+        homepage.setInterval(Duration.ofSeconds(60));
+        homepage.setTimeout(Duration.ofSeconds(5));
 
         Check ping = new Check();
         ping.setName("host-ping");
         ping.setType(CheckType.REACHABILITY);
         ping.setHost("google.com");
+        ping.setInterval(Duration.ofSeconds(60));
+        ping.setTimeout(Duration.ofSeconds(5));
 
         Check tcpConnect = new Check();
         tcpConnect.setName("https-tcp-connect");
         tcpConnect.setType(CheckType.TCP_CONNECT);
         tcpConnect.setHost("www.google.com");
         tcpConnect.setPort(443);
+        tcpConnect.setInterval(Duration.ofSeconds(60));
+        tcpConnect.setTimeout(Duration.ofSeconds(5));
 
         Check tlsCertificate = new Check();
         tlsCertificate.setName("https-tls-certificate");
         tlsCertificate.setType(CheckType.TLS_CERTIFICATE);
         tlsCertificate.setHost("www.google.com");
         tlsCertificate.setPort(443);
+        tlsCertificate.setInterval(Duration.ofSeconds(60));
+        tlsCertificate.setTimeout(Duration.ofSeconds(5));
 
         Check dnsLookup = new Check();
         dnsLookup.setName("dns-lookup");
         dnsLookup.setType(CheckType.DNS_LOOKUP);
         dnsLookup.setHost("www.google.com");
+        dnsLookup.setInterval(Duration.ofSeconds(60));
+        dnsLookup.setTimeout(Duration.ofSeconds(5));
 
         Resource google = new Resource();
         google.setName("Google");
@@ -127,6 +137,8 @@ public class ConnectivityMonitorProperties {
         private boolean requireNonEmptyBody = true;
 
         private Duration timeout = Duration.ofSeconds(10);
+
+        private Duration interval;
 
         public String getName() {
             return name;
@@ -190,6 +202,67 @@ public class ConnectivityMonitorProperties {
 
         public void setTimeout(Duration timeout) {
             this.timeout = timeout;
+        }
+
+        public Duration getInterval() {
+            return interval;
+        }
+
+        public void setInterval(Duration interval) {
+            this.interval = interval;
+        }
+    }
+
+    public static class Metric {
+
+        private String name;
+
+        private String command;
+
+        private String unit;
+
+        private Duration timeout = Duration.ofSeconds(10);
+
+        private Duration interval;
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public String getCommand() {
+            return command;
+        }
+
+        public void setCommand(String command) {
+            this.command = command;
+        }
+
+        public String getUnit() {
+            return unit;
+        }
+
+        public void setUnit(String unit) {
+            this.unit = unit;
+        }
+
+        public Duration getTimeout() {
+            return timeout;
+        }
+
+        public void setTimeout(Duration timeout) {
+            this.timeout = timeout;
+        }
+
+        public Duration getInterval() {
+            return interval;
+        }
+
+        public void setInterval(Duration interval) {
+            this.interval = interval;
         }
     }
 }
