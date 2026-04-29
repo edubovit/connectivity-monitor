@@ -1,0 +1,50 @@
+spring:
+  application:
+    name: connectivity-monitor
+  datasource:
+    url: jdbc:h2:file:./connectivity-monitor-data;AUTO_SERVER=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  sql:
+    init:
+      mode: always
+
+server:
+  port: 20001
+
+connectivity:
+  interval: 60s
+  initial-delay: 0s
+  concurrency: 10
+  resources:
+    - name: Google
+      checks:
+        - name: homepage-get
+          type: HTTP_GET
+          url: https://www.google.com/
+          expected-status: 200
+          require-non-empty-body: true
+          timeout: 5s
+        - name: host-ping
+          type: REACHABILITY
+          host: google.com
+          timeout: 5s
+        - name: https-tcp-connect
+          type: TCP_CONNECT
+          host: www.google.com
+          port: 443
+          timeout: 5s
+        - name: https-tls-certificate
+          type: TLS_CERTIFICATE
+          host: www.google.com
+          port: 443
+          timeout: 5s
+        - name: dns-lookup
+          type: DNS_LOOKUP
+          host: www.google.com
+          timeout: 5s
+
+logging:
+  level:
+    net.edubovit.connectivity.monitor: INFO

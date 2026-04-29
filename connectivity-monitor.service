@@ -1,0 +1,15 @@
+[Unit]
+Description=Connectivity Monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=connectivity
+ExecStart=java -Xms16m -Xmx64m -Xss256k -XX:+UseSerialGC -XX:MaxHeapFreeRatio=50 -XX:MinHeapFreeRatio=10 -XX:-ShrinkHeapInSteps -XX:ActiveProcessorCount=1 -XX:MaxDirectMemorySize=16m -XX:ReservedCodeCacheSize=32m -XX:MaxMetaspaceSize=64m -XX:+UseCompactObjectHeaders -XX:-UsePerfData -XX:TieredStopAtLevel=1 -XX:CICompilerCount=1 -Djava.awt.headless=true -XX:+ExitOnOutOfMemoryError -jar /opt/connectivity-monitor/connectivity-monitor.jar --config /opt/connectivity-monitor/application.yml
+SuccessExitStatus=143
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

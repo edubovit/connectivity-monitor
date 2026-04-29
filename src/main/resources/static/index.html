@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Connectivity Monitor</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%2322c55e'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main class="shell">
+    <header class="hero">
+        <div>
+            <p class="eyebrow">Connectivity monitor</p>
+            <h1>Resource availability</h1>
+        </div>
+        <button id="refresh" class="button primary">Refresh</button>
+    </header>
+
+    <section class="panel controls" aria-label="Time range filters">
+        <div class="controls-row controls-row-top">
+            <div class="control-group">
+                <span class="control-label">Quick range</span>
+                <div class="quick-toolbar">
+                    <div class="quick-filters" role="group" aria-label="Quick time ranges">
+                        <button class="button range active" type="button" data-hours="1">Last 1h</button>
+                        <button class="button range" type="button" data-hours="6">Last 6h</button>
+                        <button class="button range" type="button" data-hours="24">Last 24h</button>
+                        <button class="button range" type="button" data-hours="168">Last 7d</button>
+                    </div>
+                    <label class="refresh-chip">
+                        <span>Refresh every</span>
+                        <input id="refresh-interval" type="number" min="0" step="1" value="5">
+                        <span>sec</span>
+                    </label>
+                </div>
+            </div>
+        </div>
+        <div class="controls-row custom-range">
+            <label class="control-field resource-field">
+                Resource
+                <input id="resource-filter" type="search" placeholder="Filter by name">
+            </label>
+            <label class="control-field time-field">
+                From
+                <input id="from" type="datetime-local">
+            </label>
+            <label class="control-field time-field">
+                To
+                <input id="to" type="datetime-local">
+            </label>
+            <button id="apply-custom" class="button apply-button" type="button">Apply custom</button>
+        </div>
+    </section>
+
+    <section id="message" class="message" hidden></section>
+
+    <section id="cards" class="cards" aria-label="Resource status cards"></section>
+
+    <section class="panel">
+        <div class="section-title">
+            <div>
+                <h2>Status timeline</h2>
+            </div>
+            <div class="timeline-meta">
+                <span id="range-label"></span>
+                <div class="legend" aria-label="Graph legend">
+                    <span><i class="legend-swatch online"></i> Online</span>
+                    <span><i class="legend-swatch offline"></i> Offline</span>
+                </div>
+            </div>
+        </div>
+        <div id="status-graph" class="status-graph" aria-label="Resource online and offline timeline graph"></div>
+    </section>
+</main>
+
+<dialog id="failure-dialog" class="failure-dialog">
+    <div class="dialog-header">
+        <div>
+            <p class="eyebrow">Offline sample</p>
+            <h2 id="failure-title">Failed checks</h2>
+            <p id="failure-subtitle" class="subtitle"></p>
+        </div>
+        <button id="failure-close" class="button" type="button">Close</button>
+    </div>
+    <div id="failure-list" class="failure-list"></div>
+</dialog>
+
+<template id="card-template">
+    <article class="card">
+        <div class="card-header">
+            <div>
+                <h2 class="resource-name"></h2>
+                <p class="resource-target"></p>
+            </div>
+            <div class="badges">
+                <span class="status-badge"></span>
+            </div>
+        </div>
+        <div class="availability"></div>
+        <div class="counts"></div>
+        <div class="checks-summary" aria-label="Check status summary"></div>
+        <div class="sparkline" aria-label="Resource timeline of checks"></div>
+    </article>
+</template>
+
+<script src="app.js"></script>
+</body>
+</html>
