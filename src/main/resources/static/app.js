@@ -517,11 +517,43 @@ function sampleForSegmentClick(event, segment, run) {
     const rect = segment.getBoundingClientRect();
     const ratio = rect.width <= 0 ? 0 : clamp((event.clientX - rect.left) / rect.width, 0, 1);
     const clickedAtMs = run.startMs + (run.endMs - run.startMs) * ratio;
-    return run.samples.reduce((nearest, sample) => {
+    const nearestSample = run.samples.reduce((nearest, sample) => {
         const nearestDistance = Math.abs(new Date(nearest.checkedAt).getTime() - clickedAtMs);
         const sampleDistance = Math.abs(new Date(sample.checkedAt).getTime() - clickedAtMs);
         return sampleDistance < nearestDistance ? sample : nearest;
     }, run.samples[0]);
+    return sampleAt(nearestSample, clickedAtMs);
+}
+
+function sampleAt(sample, clickedAtMs) {
+    if (!sample || sample.online) {
+        return sample;
+    }
+
+    const clickedAt = new Date(clickedAtMs).toISOString();
+    return {
+        ...sample,
+        checkedAt: clickedAt,
+        failedChecks: (sample.failedChecks || []).map((check) => updateFailureDuration(check, clickedAtMs, clickedAt)),
+    };
+}
+
+function updateFailureDuration(check, clickedAtMs, clickedAt) {
+    if (!check.failureStartedAt) {
+        return check;
+    }
+
+    const failureStartedAtMs = new Date(check.failureStartedAt).getTime();
+    if (Number.isNaN(failureStartedAtMs) || clickedAtMs < failureStartedAtMs) {
+        return check;
+    }
+
+    return {
+        ...check,
+        checkedAt: clickedAt,
+        failureEndedAt: clickedAt,
+        failureDurationMs: Math.max(Math.round(clickedAtMs - failureStartedAtMs), 0),
+    };
 }
 
 function showFailureDialog(resource, sample) {

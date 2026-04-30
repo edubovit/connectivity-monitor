@@ -23,6 +23,9 @@ CREATE INDEX IF NOT EXISTS idx_check_results_resource_checked_at
 CREATE INDEX IF NOT EXISTS idx_check_results_check_checked_at
     ON check_results (resource_name, check_name, checked_at_epoch_ms);
 
+CREATE INDEX IF NOT EXISTS idx_check_results_check_success_checked_at
+    ON check_results (resource_name, check_name, successful, checked_at_epoch_ms);
+
 CREATE INDEX IF NOT EXISTS idx_check_results_resource_run
     ON check_results (resource_name, run_id, checked_at_epoch_ms);
 

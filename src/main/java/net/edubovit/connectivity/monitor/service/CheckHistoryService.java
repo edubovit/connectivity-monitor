@@ -6,6 +6,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -47,30 +48,39 @@ public class CheckHistoryService {
     }
 
     public List<AvailabilityView> availability(Instant from, Instant to) {
-        List<PersistedCheckResult> results = resultRepository.findUntil(to);
-        Map<String, List<PersistedCheckResult>> resultsByResource = results.stream()
-                .collect(Collectors.groupingBy(PersistedCheckResult::resourceName, LinkedHashMap::new, Collectors.toList()));
-
         Map<String, ResourceView> configuredResources = resources().stream()
                 .collect(Collectors.toMap(ResourceView::name, Function.identity(), (left, right) -> left, LinkedHashMap::new));
+        List<PersistedCheckResult> results = resultRepository.findForAvailability(from, to, checksByResource(configuredResources));
+        Map<String, List<PersistedCheckResult>> resultsByResource = results.stream()
+                .collect(Collectors.groupingBy(PersistedCheckResult::resourceName, LinkedHashMap::new, Collectors.toList()));
+        Map<Long, Instant> failureStartOverrides = failureStartOverrides(results, from);
 
         List<AvailabilityView> availability = new ArrayList<>();
         for (ResourceView resource : configuredResources.values()) {
-            availability.add(toAvailability(resource, resultsByResource.getOrDefault(resource.name(), List.of()), from));
+            availability.add(toAvailability(
+                    resource,
+                    resultsByResource.getOrDefault(resource.name(), List.of()),
+                    from,
+                    failureStartOverrides));
         }
 
         return availability;
     }
 
-    private AvailabilityView toAvailability(ResourceView resource, List<PersistedCheckResult> results, Instant from) {
+    private AvailabilityView toAvailability(
+            ResourceView resource,
+            List<PersistedCheckResult> results,
+            Instant from,
+            Map<Long, Instant> failureStartOverrides) {
         List<PersistedCheckResult> rangeResults = results.stream()
                 .filter(result -> !result.checkedAt().isBefore(from))
                 .toList();
-        List<ResourceStatusSample> timeline = resourceTimeline(resource, results, from);
-        long totalSamples = timeline.size();
-        long onlineSamples = timeline.stream().filter(ResourceStatusSample::online).count();
+        List<ResourceStatusSample> rawTimeline = resourceTimeline(resource, results, from, failureStartOverrides);
+        long totalSamples = rawTimeline.size();
+        long onlineSamples = rawTimeline.stream().filter(ResourceStatusSample::online).count();
         Double percentage = totalSamples == 0 ? null : onlineSamples * 100.0 / totalSamples;
-        Boolean online = timeline.isEmpty() ? null : timeline.getLast().online();
+        Boolean online = rawTimeline.isEmpty() ? null : rawTimeline.getLast().online();
+        List<ResourceStatusSample> timeline = compressTimeline(rawTimeline);
 
         Map<String, List<PersistedCheckResult>> resultsByCheck = rangeResults.stream()
                 .collect(Collectors.groupingBy(PersistedCheckResult::checkName, LinkedHashMap::new, Collectors.toList()));
@@ -90,12 +100,41 @@ public class CheckHistoryService {
         return new AvailabilityView(resource.name(), totalSamples, onlineSamples, percentage, online, timeline, checks);
     }
 
-    private List<ResourceStatusSample> resourceTimeline(ResourceView resource, List<PersistedCheckResult> results, Instant from) {
+    private Map<String, List<String>> checksByResource(Map<String, ResourceView> configuredResources) {
+        Map<String, List<String>> checksByResource = new LinkedHashMap<>();
+        for (ResourceView resource : configuredResources.values()) {
+            List<String> checkNames = resource.checks().stream()
+                    .map(CheckView::name)
+                    .filter(name -> name != null && !name.isBlank())
+                    .distinct()
+                    .toList();
+            if (!checkNames.isEmpty()) {
+                checksByResource.put(resource.name(), checkNames);
+            }
+        }
+        return checksByResource;
+    }
+
+    private Map<Long, Instant> failureStartOverrides(List<PersistedCheckResult> results, Instant from) {
+        Map<Long, Instant> overrides = new LinkedHashMap<>();
+        results.stream()
+                .filter(result -> result.checkedAt().isBefore(from))
+                .filter(result -> !result.successful())
+                .forEach(result -> resultRepository.findFailureStartedAt(result)
+                        .ifPresent(startedAt -> overrides.put(result.id(), startedAt)));
+        return overrides;
+    }
+
+    private List<ResourceStatusSample> resourceTimeline(
+            ResourceView resource,
+            List<PersistedCheckResult> results,
+            Instant from,
+            Map<Long, Instant> failureStartOverrides) {
         if (results.isEmpty()) {
             return List.of();
         }
 
-        Map<Long, FailurePeriod> failurePeriods = failurePeriodsByResult(results);
+        Map<Long, FailurePeriod> failurePeriods = failurePeriodsByResult(results, failureStartOverrides);
         Set<String> requiredCheckNames = resource.checks().stream()
                 .map(CheckView::name)
                 .collect(Collectors.toSet());
@@ -129,7 +168,42 @@ public class CheckHistoryService {
         return timeline;
     }
 
-    private Map<Long, FailurePeriod> failurePeriodsByResult(List<PersistedCheckResult> results) {
+    private List<ResourceStatusSample> compressTimeline(List<ResourceStatusSample> rawTimeline) {
+        if (rawTimeline.isEmpty()) {
+            return List.of();
+        }
+
+        List<ResourceStatusSample> compressed = new ArrayList<>();
+        String previousSignature = null;
+        for (ResourceStatusSample sample : rawTimeline) {
+            String signature = statusSignature(sample);
+            if (!signature.equals(previousSignature)) {
+                compressed.add(sample);
+                previousSignature = signature;
+            }
+        }
+        return compressed;
+    }
+
+    private String statusSignature(ResourceStatusSample sample) {
+        if (sample.online()) {
+            return "online";
+        }
+
+        return "offline|" + sample.failedChecks().stream()
+                .map(failedCheck -> String.join("\u0001",
+                        Objects.toString(failedCheck.checkName(), ""),
+                        Objects.toString(failedCheck.checkType(), ""),
+                        Objects.toString(failedCheck.target(), ""),
+                        Objects.toString(failedCheck.errorMessage(), ""),
+                        Objects.toString(failedCheck.details(), "")))
+                .sorted()
+                .collect(Collectors.joining("\u0002"));
+    }
+
+    private Map<Long, FailurePeriod> failurePeriodsByResult(
+            List<PersistedCheckResult> results,
+            Map<Long, Instant> failureStartOverrides) {
         Map<Long, FailurePeriod> periods = new LinkedHashMap<>();
         Map<String, List<PersistedCheckResult>> resultsByCheck = results.stream()
                 .collect(Collectors.groupingBy(this::checkKey, LinkedHashMap::new, Collectors.toList()));
@@ -141,24 +215,27 @@ public class CheckHistoryService {
             List<PersistedCheckResult> failedStreak = new ArrayList<>();
             for (PersistedCheckResult result : sortedResults) {
                 if (result.successful()) {
-                    addFailurePeriod(periods, failedStreak);
+                    addFailurePeriod(periods, failedStreak, failureStartOverrides);
                     failedStreak.clear();
                 } else {
                     failedStreak.add(result);
                 }
             }
-            addFailurePeriod(periods, failedStreak);
+            addFailurePeriod(periods, failedStreak, failureStartOverrides);
         }
 
         return periods;
     }
 
-    private void addFailurePeriod(Map<Long, FailurePeriod> periods, List<PersistedCheckResult> failedStreak) {
+    private void addFailurePeriod(
+            Map<Long, FailurePeriod> periods,
+            List<PersistedCheckResult> failedStreak,
+            Map<Long, Instant> failureStartOverrides) {
         if (failedStreak.isEmpty()) {
             return;
         }
 
-        Instant startedAt = failedStreak.getFirst().checkedAt();
+        Instant startedAt = failureStartOverrides.getOrDefault(failedStreak.getFirst().id(), failedStreak.getFirst().checkedAt());
         Instant endedAt = failedStreak.getLast().checkedAt();
         long durationMs = Math.max(endedAt.toEpochMilli() - startedAt.toEpochMilli(), 0L);
         FailurePeriod period = new FailurePeriod(startedAt, endedAt, durationMs);
