@@ -6,6 +6,7 @@ const state = {
     refreshIntervalSeconds: 5,
     refreshTimer: null,
     loading: false,
+    rangeInputsDirty: false,
 };
 
 const cards = document.querySelector('#cards');
@@ -26,16 +27,23 @@ document.querySelectorAll('.range').forEach((button) => {
     button.addEventListener('click', () => {
         document.querySelectorAll('.range').forEach((item) => item.classList.remove('active'));
         button.classList.add('active');
-        setQuickRange(Number(button.dataset.hours));
+        setQuickRange(Number(button.dataset.hours), {forceInputUpdate: true});
         load();
     });
 });
 
 document.querySelector('#apply-custom').addEventListener('click', () => {
+    const customRange = readCustomRange();
+    if (!customRange) {
+        return;
+    }
+
     document.querySelectorAll('.range').forEach((item) => item.classList.remove('active'));
     state.activeHours = null;
-    state.from = new Date(fromInput.value).toISOString();
-    state.to = new Date(toInput.value).toISOString();
+    state.rangeInputsDirty = false;
+    state.from = customRange.from.toISOString();
+    state.to = customRange.to.toISOString();
+    updateRangeInputs(customRange.from, customRange.to, true);
     load();
 });
 
@@ -54,6 +62,13 @@ refreshIntervalInput.addEventListener('change', () => {
     scheduleAutoRefresh();
 });
 
+[fromInput, toInput].forEach((input) => {
+    input.addEventListener('input', () => {
+        state.rangeInputsDirty = true;
+        input.setCustomValidity('');
+    });
+});
+
 document.querySelector('#failure-close').addEventListener('click', () => failureDialog.close());
 failureDialog.addEventListener('click', (event) => {
     if (event.target === failureDialog) {
@@ -65,14 +80,18 @@ setQuickRange(1);
 load();
 scheduleAutoRefresh();
 
-function setQuickRange(hours) {
+function setQuickRange(hours, options = {}) {
     state.activeHours = hours;
     const to = new Date();
     const from = new Date(to.getTime() - hours * 60 * 60 * 1000);
     state.from = from.toISOString();
     state.to = to.toISOString();
-    fromInput.value = toDateTimeLocal(from);
-    toInput.value = toDateTimeLocal(to);
+
+    const updateInputs = options.forceInputUpdate || !isCustomRangeEditing();
+    if (updateInputs) {
+        state.rangeInputsDirty = false;
+        updateRangeInputs(from, to, true);
+    }
 }
 
 async function load(options = {}) {
@@ -696,7 +715,74 @@ function escapeHtml(value) {
     return div.innerHTML;
 }
 
-function toDateTimeLocal(date) {
-    const offsetMs = date.getTimezoneOffset() * 60 * 1000;
-    return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+function readCustomRange() {
+    const from = parseDateTimeInput(fromInput.value);
+    const to = parseDateTimeInput(toInput.value);
+    setDateTimeInputValidity(fromInput, from);
+    setDateTimeInputValidity(toInput, to);
+
+    if (!from || !to) {
+        showMessage('Use date-time format YYYY.MM.DD HH:mm, for example 2026.04.30 16:58.', true);
+        (from ? toInput : fromInput).reportValidity();
+        return null;
+    }
+    if (to <= from) {
+        toInput.setCustomValidity('End date-time must be later than start date-time.');
+        toInput.reportValidity();
+        showMessage('End date-time must be later than start date-time.', true);
+        return null;
+    }
+
+    return {from, to};
+}
+
+function updateRangeInputs(from, to, clearValidity) {
+    fromInput.value = formatDateTimeInput(from);
+    toInput.value = formatDateTimeInput(to);
+    if (clearValidity) {
+        fromInput.setCustomValidity('');
+        toInput.setCustomValidity('');
+    }
+}
+
+function isCustomRangeEditing() {
+    return state.rangeInputsDirty || document.activeElement === fromInput || document.activeElement === toInput;
+}
+
+function parseDateTimeInput(value) {
+    const trimmed = value.trim();
+    const match = trimmed.match(/^(\d{4})\.(\d{2})\.(\d{2})\s+(\d{2}):(\d{2})$/);
+    if (!match) {
+        return null;
+    }
+
+    const [, yearText, monthText, dayText, hourText, minuteText] = match;
+    const year = Number(yearText);
+    const month = Number(monthText);
+    const day = Number(dayText);
+    const hour = Number(hourText);
+    const minute = Number(minuteText);
+    const date = new Date(year, month - 1, day, hour, minute, 0, 0);
+
+    if (date.getFullYear() !== year
+            || date.getMonth() !== month - 1
+            || date.getDate() !== day
+            || date.getHours() !== hour
+            || date.getMinutes() !== minute) {
+        return null;
+    }
+
+    return date;
+}
+
+function setDateTimeInputValidity(input, date) {
+    input.setCustomValidity(date ? '' : 'Use format YYYY.MM.DD HH:mm, for example 2026.04.30 16:58.');
+}
+
+function formatDateTimeInput(value) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) {
+        return '';
+    }
+    return `${date.getFullYear()}.${pad(date.getMonth() + 1)}.${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
