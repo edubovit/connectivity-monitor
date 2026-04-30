@@ -7,6 +7,7 @@ import java.util.List;
 import net.edubovit.connectivity.monitor.data.PersistedCheckResult;
 import net.edubovit.connectivity.monitor.service.CheckHistoryService;
 import net.edubovit.connectivity.monitor.service.CheckHistoryService.AvailabilityView;
+import net.edubovit.connectivity.monitor.service.CheckHistoryService.ResourceLatencyView;
 import net.edubovit.connectivity.monitor.service.CheckHistoryService.ResourceView;
 import net.edubovit.connectivity.monitor.service.MetricHistoryService;
 import net.edubovit.connectivity.monitor.service.MetricHistoryService.MetricSeriesView;
@@ -47,6 +48,15 @@ public class MonitorApiController {
             @RequestParam(required = false) String to) {
         TimeRange timeRange = resolveTimeRange(from, to);
         return checkHistoryService.availability(timeRange.from(), timeRange.to());
+    }
+
+    @GetMapping("/latency")
+    public List<ResourceLatencyView> latency(
+            @RequestParam(required = false) String from,
+            @RequestParam(required = false) String to,
+            @RequestParam(required = false) String resource) {
+        TimeRange timeRange = resolveTimeRange(from, to);
+        return checkHistoryService.latency(timeRange.from(), timeRange.to(), resource);
     }
 
     @GetMapping("/metrics")

@@ -67,6 +67,21 @@ public class CheckHistoryService {
         return availability;
     }
 
+    public List<ResourceLatencyView> latency(Instant from, Instant to, String resourceName) {
+        Map<String, ResourceView> configuredResources = resources().stream()
+                .filter(resource -> resourceName == null || resourceName.isBlank() || resource.name().equals(resourceName))
+                .collect(Collectors.toMap(ResourceView::name, Function.identity(), (left, right) -> left, LinkedHashMap::new));
+        List<PersistedCheckResult> results = resultRepository.findForLatency(from, to, checksByResource(configuredResources));
+        Map<String, List<PersistedCheckResult>> resultsByResource = results.stream()
+                .collect(Collectors.groupingBy(PersistedCheckResult::resourceName, LinkedHashMap::new, Collectors.toList()));
+
+        List<ResourceLatencyView> latency = new ArrayList<>();
+        for (ResourceView resource : configuredResources.values()) {
+            latency.add(toResourceLatency(resource, resultsByResource.getOrDefault(resource.name(), List.of())));
+        }
+        return latency;
+    }
+
     private AvailabilityView toAvailability(
             ResourceView resource,
             List<PersistedCheckResult> results,
@@ -319,8 +334,42 @@ public class CheckHistoryService {
         long total = rangeResults.size();
         long successful = rangeResults.stream().filter(PersistedCheckResult::successful).count();
         Double percentage = total == 0 ? null : successful * 100.0 / total;
-        Boolean online = allResults.isEmpty() ? null : allResults.getLast().successful();
-        return new CheckAvailabilityView(check.name(), check.type(), check.target(), total, successful, percentage, online);
+        PersistedCheckResult latest = allResults.isEmpty() ? null : allResults.getLast();
+        Boolean online = latest == null ? null : latest.successful();
+        return new CheckAvailabilityView(
+                check.name(),
+                check.type(),
+                check.target(),
+                total,
+                successful,
+                percentage,
+                online,
+                latest == null ? null : latest.checkedAt(),
+                latest == null ? null : latest.durationMs());
+    }
+
+    private ResourceLatencyView toResourceLatency(ResourceView resource, List<PersistedCheckResult> results) {
+        Map<String, List<PersistedCheckResult>> resultsByCheck = results.stream()
+                .collect(Collectors.groupingBy(PersistedCheckResult::checkName, LinkedHashMap::new, Collectors.toList()));
+
+        List<CheckLatencyView> checks = new ArrayList<>();
+        for (CheckView check : resource.checks()) {
+            List<PersistedCheckResult> checkResults = resultsByCheck.getOrDefault(check.name(), List.of()).stream()
+                    .sorted(Comparator.comparing(PersistedCheckResult::checkedAt).thenComparing(PersistedCheckResult::id))
+                    .toList();
+            PersistedCheckResult latest = checkResults.isEmpty() ? null : checkResults.getLast();
+            checks.add(new CheckLatencyView(
+                    check.name(),
+                    check.type(),
+                    check.target(),
+                    latest == null ? null : latest.checkedAt(),
+                    latest == null ? null : latest.successful(),
+                    latest == null ? null : latest.durationMs(),
+                    checkResults.stream()
+                            .map(result -> new CheckLatencySample(result.checkedAt(), result.successful(), result.durationMs()))
+                            .toList()));
+        }
+        return new ResourceLatencyView(resource.name(), checks);
     }
 
     public record ResourceView(String name, List<CheckView> checks) {
@@ -372,7 +421,33 @@ public class CheckHistoryService {
             long totalChecks,
             long successfulChecks,
             Double availabilityPercent,
-            Boolean online
+            Boolean online,
+            Instant latestCheckedAt,
+            Long latestDurationMs
+    ) {
+    }
+
+    public record ResourceLatencyView(
+            String resourceName,
+            List<CheckLatencyView> checks
+    ) {
+    }
+
+    public record CheckLatencyView(
+            String checkName,
+            String checkType,
+            String target,
+            Instant latestCheckedAt,
+            Boolean latestSuccessful,
+            Long latestDurationMs,
+            List<CheckLatencySample> samples
+    ) {
+    }
+
+    public record CheckLatencySample(
+            Instant checkedAt,
+            boolean successful,
+            long durationMs
     ) {
     }
 }

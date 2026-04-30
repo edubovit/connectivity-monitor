@@ -54,6 +54,8 @@ class CheckHistoryServiceTest {
                                 assertThat(failedCheck.details()).isEqualTo("details");
                             });
                     assertThat(availability.timeline().get(1).failedChecks()).isEmpty();
+                    assertThat(availability.checks()).extracting(CheckHistoryService.CheckAvailabilityView::latestDurationMs)
+                            .containsExactly(100L, 100L);
                 });
     }
 
@@ -161,6 +163,34 @@ class CheckHistoryServiceTest {
 
         assertThat(failedCheck.failureStartedAt()).isEqualTo(Instant.parse("2026-04-28T14:30:00Z"));
         assertThat(failedCheck.failureDurationMs()).isEqualTo(Duration.ofMinutes(31).toMillis());
+    }
+
+    @Test
+    void latencyReturnsConfiguredChecksWithBaselineAndRangeSamples() {
+        Instant from = Instant.parse("2026-04-28T16:00:00Z");
+        Instant to = Instant.parse("2026-04-28T16:10:00Z");
+        CheckResultRepository repository = mock(CheckResultRepository.class);
+        when(repository.findForLatency(eq(from), eq(to), any())).thenReturn(List.of(
+                result(1, "run-before", "homepage-get", true, "2026-04-28T15:59:00Z"),
+                result(2, "run-1", "homepage-get", true, "2026-04-28T16:01:00Z"),
+                result(3, "run-2", "homepage-get", false, "2026-04-28T16:02:00Z"),
+                result(4, "run-3", "host-ping", true, "2026-04-28T16:03:00Z"),
+                result(5, "run-stale", "removed-check", true, "2026-04-28T16:04:00Z")));
+
+        CheckHistoryService service = new CheckHistoryService(propertiesWithTwoChecks(), repository);
+
+        assertThat(service.latency(from, to, "example-resource"))
+                .singleElement()
+                .satisfies(resource -> {
+                    assertThat(resource.resourceName()).isEqualTo("example-resource");
+                    assertThat(resource.checks()).extracting(CheckHistoryService.CheckLatencyView::checkName)
+                            .containsExactly("homepage-get", "host-ping");
+                    CheckHistoryService.CheckLatencyView homepage = resource.checks().getFirst();
+                    assertThat(homepage.latestSuccessful()).isFalse();
+                    assertThat(homepage.latestDurationMs()).isEqualTo(100L);
+                    assertThat(homepage.samples()).extracting(CheckHistoryService.CheckLatencySample::successful)
+                            .containsExactly(true, true, false);
+                });
     }
 
     private PersistedCheckResult result(long id, String runId, String checkName, boolean successful, String checkedAt) {

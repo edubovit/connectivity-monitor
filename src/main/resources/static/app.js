@@ -22,6 +22,10 @@ const failureDialog = document.querySelector('#failure-dialog');
 const failureTitle = document.querySelector('#failure-title');
 const failureSubtitle = document.querySelector('#failure-subtitle');
 const failureList = document.querySelector('#failure-list');
+const latencyDialog = document.querySelector('#latency-dialog');
+const latencyTitle = document.querySelector('#latency-title');
+const latencySubtitle = document.querySelector('#latency-subtitle');
+const latencyList = document.querySelector('#latency-list');
 
 document.querySelectorAll('.range').forEach((button) => {
     button.addEventListener('click', () => {
@@ -73,6 +77,12 @@ document.querySelector('#failure-close').addEventListener('click', () => failure
 failureDialog.addEventListener('click', (event) => {
     if (event.target === failureDialog) {
         failureDialog.close();
+    }
+});
+document.querySelector('#latency-close').addEventListener('click', () => latencyDialog.close());
+latencyDialog.addEventListener('click', (event) => {
+    if (event.target === latencyDialog) {
+        latencyDialog.close();
     }
 });
 
@@ -175,6 +185,17 @@ function renderCards(availability) {
         const latest = latestResourceStatus(item);
         const card = node.querySelector('.card');
         card.classList.add(`status-${statusClass(latest)}`);
+        card.classList.add('clickable-card');
+        card.setAttribute('role', 'button');
+        card.tabIndex = 0;
+        card.title = `Open ${item.resourceName} latency graphs`;
+        card.addEventListener('click', () => openLatencyDialog(item));
+        card.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                openLatencyDialog(item);
+            }
+        });
 
         node.querySelector('.resource-name').textContent = item.resourceName;
         node.querySelector('.resource-target').textContent = `${(item.checks || []).length} checks`;
@@ -229,7 +250,10 @@ function renderCardStatusLine(container, resource, samples) {
                 ? `${formatDateTime(run.samples[0].checkedAt)} - online`
                 : `${formatDateTime(run.samples[0].checkedAt)} - offline. Click to see failed checks.`;
         if (!run.online) {
-            segment.addEventListener('click', (event) => showFailureDialog(resource, sampleForSegmentClick(event, segment, run)));
+            segment.addEventListener('click', (event) => {
+                event.stopPropagation();
+                showFailureDialog(resource, sampleForSegmentClick(event, segment, run));
+            });
         }
         container.append(segment);
     });
@@ -253,9 +277,225 @@ function renderCheckSummary(container, checks) {
         name.className = 'check-summary-name';
         name.textContent = `${check.checkName} (${check.checkType})`;
 
-        row.append(status, name);
+        const latency = document.createElement('span');
+        latency.className = `check-summary-latency ${statusClass({successful: check.online})}`;
+        latency.textContent = formatLatency(check.latestDurationMs);
+        latency.title = check.latestCheckedAt
+                ? `Last checked at ${formatDateTime(check.latestCheckedAt)}`
+                : 'No latency data yet';
+
+        row.append(status, name, latency);
         container.append(row);
     });
+}
+
+async function openLatencyDialog(resource) {
+    latencyTitle.textContent = `${resource.resourceName} latency`;
+    latencySubtitle.textContent = `${formatDateTimeMinute(state.from)} → ${formatDateTimeMinute(state.to)}`;
+    latencyList.innerHTML = '<p class="latency-loading">Loading check latency...</p>';
+    latencyDialog.showModal();
+
+    try {
+        const query = `from=${encodeURIComponent(state.from)}&to=${encodeURIComponent(state.to)}&resource=${encodeURIComponent(resource.resourceName)}`;
+        const latency = await fetchJson(apiUrl(`api/latency?${query}`));
+        const resourceLatency = latency.find((item) => item.resourceName === resource.resourceName);
+        renderLatencyList(resourceLatency);
+    } catch (error) {
+        latencyList.innerHTML = `<p class="message error-message">${escapeHtml(error.message)}</p>`;
+    }
+}
+
+function renderLatencyList(resourceLatency) {
+    latencyList.replaceChildren();
+    if (!resourceLatency || !resourceLatency.checks || resourceLatency.checks.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'latency-loading';
+        empty.textContent = 'No checks configured for this resource.';
+        latencyList.append(empty);
+        return;
+    }
+
+    const fromMs = new Date(state.from).getTime();
+    const toMs = new Date(state.to).getTime();
+    const rangeMs = Math.max(toMs - fromMs, 1);
+
+    resourceLatency.checks.forEach((check) => {
+        const item = document.createElement('article');
+        item.className = 'latency-item';
+
+        const header = document.createElement('div');
+        header.className = 'latency-item-header';
+        const title = document.createElement('div');
+        title.innerHTML = `<h3>${escapeHtml(check.checkName)}</h3><p class="subtitle">${escapeHtml(check.checkType)} · ${escapeHtml(check.target || '')}</p>`;
+        const latest = document.createElement('div');
+        latest.className = `latency-latest ${statusClass({successful: check.latestSuccessful})}`;
+        latest.textContent = formatLatency(check.latestDurationMs);
+        header.append(title, latest);
+
+        const axis = metricTimeAxis(fromMs, toMs);
+        const chart = document.createElement('div');
+        chart.className = 'latency-chart';
+        chart.setAttribute('role', 'img');
+        chart.setAttribute('aria-label', `${check.checkName} latency chart`);
+        renderLatencyChart(chart, check.samples || [], fromMs, toMs, rangeMs);
+
+        item.append(header, axis, chart);
+        latencyList.append(item);
+    });
+}
+
+function renderLatencyChart(chart, samples, fromMs, toMs, rangeMs) {
+    chart.replaceChildren();
+    const sortedSamples = [...samples]
+            .sort((left, right) => new Date(left.checkedAt) - new Date(right.checkedAt));
+    const visibleSuccessfulSamples = sortedSamples
+            .filter((sample) => sample.successful && new Date(sample.checkedAt).getTime() >= fromMs && new Date(sample.checkedAt).getTime() <= toMs);
+    const successfulSamples = sortedSamples.filter((sample) => sample.successful);
+
+    renderLatencyFailures(chart, sortedSamples, fromMs, toMs, rangeMs);
+
+    if (successfulSamples.length === 0) {
+        const empty = document.createElement('span');
+        empty.className = 'metric-chart-empty';
+        empty.textContent = sortedSamples.length === 0 ? 'No latency samples in range' : 'No successful latency samples in range';
+        chart.append(empty);
+        return;
+    }
+
+    const values = successfulSamples.map((sample) => sample.durationMs);
+    const actualMinValue = Math.min(...values);
+    const actualMaxValue = Math.max(...values);
+    let chartMinValue = actualMinValue;
+    let chartMaxValue = actualMaxValue;
+    const constantValue = actualMinValue === actualMaxValue;
+    if (constantValue) {
+        const padding = Math.max(Math.abs(actualMinValue) * 0.1, 5);
+        chartMinValue -= padding;
+        chartMaxValue += padding;
+    }
+    const valueRange = Math.max(chartMaxValue - chartMinValue, 1);
+
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.classList.add('metric-line-svg');
+    svg.setAttribute('viewBox', '0 0 100 100');
+    svg.setAttribute('preserveAspectRatio', 'none');
+
+    latencyPathSegments(sortedSamples, fromMs, toMs).forEach((segment) => {
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.classList.add('metric-line');
+        path.setAttribute('d', segment.map((sample, index) => {
+            const point = latencyPoint(sample, fromMs, rangeMs, chartMinValue, valueRange);
+            return `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(3)} ${point.y.toFixed(3)}`;
+        }).join(' '));
+        svg.append(path);
+    });
+    chart.append(svg);
+
+    const hover = metricHoverElements();
+    chart.append(hover.line, hover.marker, hover.tooltip);
+    const hoverSamples = visibleSuccessfulSamples
+            .map((sample) => ({sample, measuredAtMs: new Date(sample.checkedAt).getTime()}))
+            .filter((entry) => Number.isFinite(entry.measuredAtMs));
+    chart.addEventListener('pointermove', (event) => updateLatencyHover(
+            event,
+            chart,
+            hover,
+            hoverSamples,
+            fromMs,
+            rangeMs,
+            chartMinValue,
+            valueRange));
+    chart.addEventListener('pointerleave', () => hideMetricHover(hover));
+
+    const topLabel = document.createElement('span');
+    topLabel.className = 'metric-axis-label top';
+    topLabel.textContent = formatLatency(actualMaxValue);
+    chart.append(topLabel);
+    if (!constantValue) {
+        const bottomLabel = document.createElement('span');
+        bottomLabel.className = 'metric-axis-label bottom';
+        bottomLabel.textContent = formatLatency(actualMinValue);
+        chart.append(bottomLabel);
+    }
+}
+
+function renderLatencyFailures(chart, samples, fromMs, toMs, rangeMs) {
+    samples.forEach((sample, index) => {
+        if (sample.successful) {
+            return;
+        }
+        const startMs = Math.max(new Date(sample.checkedAt).getTime(), fromMs);
+        const nextMs = index + 1 < samples.length ? new Date(samples[index + 1].checkedAt).getTime() : toMs;
+        const endMs = Math.min(Math.max(nextMs, startMs + 1), toMs);
+        if (endMs <= fromMs || startMs >= toMs) {
+            return;
+        }
+
+        const failure = document.createElement('span');
+        failure.className = 'latency-failure-range';
+        failure.style.left = `${((startMs - fromMs) / rangeMs) * 100}%`;
+        failure.style.width = `${Math.max(((endMs - startMs) / rangeMs) * 100, 0.3)}%`;
+        failure.title = `Failed from ${formatDateTimeMinute(new Date(startMs).toISOString())}`;
+        chart.append(failure);
+    });
+}
+
+function latencyPathSegments(samples, fromMs, toMs) {
+    const segments = [];
+    let current = [];
+    samples.forEach((sample) => {
+        const checkedAtMs = new Date(sample.checkedAt).getTime();
+        if (!sample.successful) {
+            if (current.length > 0) {
+                segments.push(current);
+                current = [];
+            }
+            return;
+        }
+
+        if (checkedAtMs < fromMs && current.length === 0) {
+            current.push({...sample, checkedAt: new Date(fromMs).toISOString()});
+            return;
+        }
+        if (checkedAtMs > toMs) {
+            return;
+        }
+        current.push(sample);
+    });
+    if (current.length > 0) {
+        segments.push(current);
+    }
+    return segments;
+}
+
+function latencyPoint(sample, fromMs, rangeMs, minValue, valueRange) {
+    const checkedAtMs = new Date(sample.checkedAt).getTime();
+    const x = clamp(((checkedAtMs - fromMs) / rangeMs) * 100, 0, 100);
+    const normalized = (sample.durationMs - minValue) / valueRange;
+    const y = clamp(90 - normalized * 78, 8, 92);
+    return {x, y};
+}
+
+function updateLatencyHover(event, chart, hover, hoverSamples, fromMs, rangeMs, minValue, valueRange) {
+    if (hoverSamples.length === 0) {
+        hideMetricHover(hover);
+        return;
+    }
+    const rect = chart.getBoundingClientRect();
+    const ratio = rect.width <= 0 ? 0 : clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    const targetMs = fromMs + ratio * rangeMs;
+    const nearest = nearestMetricSample(hoverSamples, targetMs);
+    const point = latencyPoint(nearest.sample, fromMs, rangeMs, minValue, valueRange);
+    hover.line.style.left = `${point.x}%`;
+    hover.marker.style.left = `${point.x}%`;
+    hover.marker.style.top = `${point.y}%`;
+    hover.tooltip.style.left = `${clamp(point.x, 10, 90)}%`;
+    hover.tooltip.style.top = `${clamp(point.y, 16, 84)}%`;
+    hover.tooltip.classList.toggle('below', point.y < 32);
+    hover.tooltip.innerHTML = `
+        <strong>${escapeHtml(formatLatency(nearest.sample.durationMs))}</strong>
+        <span>${escapeHtml(formatDateTimeMinute(nearest.sample.checkedAt))}</span>`;
+    chart.classList.add('hovering');
 }
 
 function renderStatusGraph(availability) {
@@ -866,6 +1106,16 @@ function formatMetricValue(value, unit) {
                     ? value.toFixed(1)
                     : value.toFixed(2);
     return unit ? `${formatted} ${unit}` : formatted;
+}
+
+function formatLatency(durationMs) {
+    if (!Number.isFinite(durationMs)) {
+        return 'N/A';
+    }
+    if (durationMs < 1000) {
+        return `${Math.round(durationMs)} ms`;
+    }
+    return `${(durationMs / 1000).toFixed(durationMs < 10_000 ? 2 : 1)} s`;
 }
 
 function formatDateTime(value) {

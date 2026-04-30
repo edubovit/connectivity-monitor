@@ -133,9 +133,55 @@ public class CheckResultRepository {
         return results;
     }
 
+    public List<PersistedCheckResult> findForLatency(
+            Instant from,
+            Instant to,
+            Map<String, ? extends Collection<String>> checksByResource) {
+        FilterSql filterSql = filterSql(checksByResource);
+        if (filterSql.empty()) {
+            return List.of();
+        }
+
+        MapSqlParameterSource parameters = filterSql.parameters()
+                .addValue("from", from.toEpochMilli())
+                .addValue("to", to.toEpochMilli());
+        String configuredChecksFilter = filterSql.sql();
+
+        List<PersistedCheckResult> results = new ArrayList<>(namedParameterJdbcTemplate.query("""
+                        SELECT id,
+                               run_id,
+                               resource_name,
+                               check_name,
+                               check_type,
+                               checked_at_epoch_ms,
+                               successful,
+                               duration_ms,
+                               NULL AS details,
+                               NULL AS error_message
+                        FROM check_results
+                        WHERE checked_at_epoch_ms >= :from
+                          AND checked_at_epoch_ms <= :to
+                          AND %1$s
+                        ORDER BY checked_at_epoch_ms ASC, id ASC
+                        """.formatted(configuredChecksFilter),
+                parameters,
+                this::mapResult));
+
+        results.addAll(findLatestBefore(from, checksByResource, false));
+        results.sort(Comparator.comparing(PersistedCheckResult::checkedAt).thenComparing(PersistedCheckResult::id));
+        return results;
+    }
+
     private List<PersistedCheckResult> findLatestBefore(
             Instant from,
             Map<String, ? extends Collection<String>> checksByResource) {
+        return findLatestBefore(from, checksByResource, true);
+    }
+
+    private List<PersistedCheckResult> findLatestBefore(
+            Instant from,
+            Map<String, ? extends Collection<String>> checksByResource,
+            boolean includeFailureDetails) {
         List<PersistedCheckResult> baselineResults = new ArrayList<>();
         if (checksByResource == null || checksByResource.isEmpty()) {
             return baselineResults;
@@ -148,12 +194,18 @@ public class CheckResultRepository {
             entry.getValue().stream()
                     .filter(checkName -> checkName != null && !checkName.isBlank())
                     .distinct()
-                    .forEach(checkName -> baselineResults.addAll(findLatestBefore(from, entry.getKey(), checkName)));
+                    .forEach(checkName -> baselineResults.addAll(findLatestBefore(from, entry.getKey(), checkName, includeFailureDetails)));
         }
         return baselineResults;
     }
 
-    private List<PersistedCheckResult> findLatestBefore(Instant from, String resourceName, String checkName) {
+    private List<PersistedCheckResult> findLatestBefore(
+            Instant from,
+            String resourceName,
+            String checkName,
+            boolean includeFailureDetails) {
+        String detailsColumn = includeFailureDetails ? "CASE WHEN successful THEN NULL ELSE details END" : "NULL";
+        String errorMessageColumn = includeFailureDetails ? "CASE WHEN successful THEN NULL ELSE error_message END" : "NULL";
         return jdbcTemplate.query("""
                         SELECT id,
                                run_id,
@@ -163,15 +215,15 @@ public class CheckResultRepository {
                                checked_at_epoch_ms,
                                successful,
                                duration_ms,
-                               CASE WHEN successful THEN NULL ELSE details END AS details,
-                               CASE WHEN successful THEN NULL ELSE error_message END AS error_message
+                               %s AS details,
+                               %s AS error_message
                         FROM check_results
                         WHERE resource_name = ?
                           AND check_name = ?
                           AND checked_at_epoch_ms < ?
                         ORDER BY checked_at_epoch_ms DESC, id DESC
                         LIMIT 1
-                        """,
+                        """.formatted(detailsColumn, errorMessageColumn),
                 this::mapResult,
                 resourceName,
                 checkName,

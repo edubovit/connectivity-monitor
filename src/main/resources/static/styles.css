@@ -223,6 +223,16 @@ input {
     padding: 20px;
 }
 
+.clickable-card {
+    cursor: pointer;
+}
+
+.clickable-card:hover,
+.clickable-card:focus-visible {
+    transform: translateY(-1px);
+    border-color: var(--blue);
+}
+
 .empty-card {
     display: grid;
     gap: 8px;
@@ -306,7 +316,7 @@ input {
 
 .check-summary-row {
     display: grid;
-    grid-template-columns: 12px minmax(0, 1fr);
+    grid-template-columns: 12px minmax(0, 1fr) auto;
     align-items: center;
     gap: 10px;
     border-radius: 12px;
@@ -318,6 +328,21 @@ input {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.check-summary-latency {
+    color: var(--muted);
+    font-size: 0.78rem;
+    font-weight: 900;
+    white-space: nowrap;
+}
+
+.check-summary-latency.online {
+    color: var(--blue);
+}
+
+.check-summary-latency.offline {
+    color: var(--red);
 }
 
 .sparkline {
@@ -678,7 +703,10 @@ input {
 
 .metric-chart.hovering .metric-hover-line,
 .metric-chart.hovering .metric-hover-marker,
-.metric-chart.hovering .metric-tooltip {
+.metric-chart.hovering .metric-tooltip,
+.latency-chart.hovering .metric-hover-line,
+.latency-chart.hovering .metric-hover-marker,
+.latency-chart.hovering .metric-tooltip {
     opacity: 1;
 }
 
@@ -739,13 +767,101 @@ input {
     box-shadow: 0 30px 80px rgb(0 0 0 / 0.45);
 }
 
+.latency-dialog {
+    width: min(980px, calc(100% - 32px));
+    max-height: min(840px, calc(100vh - 32px));
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 22px;
+    background: var(--panel);
+    color: var(--text);
+    padding: 22px;
+    box-shadow: 0 30px 80px rgb(0 0 0 / 0.45);
+}
+
+.latency-dialog::backdrop {
+    background: rgb(2 6 23 / 0.72);
+    backdrop-filter: blur(3px);
+}
+
+.latency-list {
+    display: grid;
+    gap: 16px;
+    margin-top: 20px;
+}
+
+.latency-loading {
+    color: var(--muted);
+}
+
+.latency-item {
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    background: #0b1324;
+    padding: 16px;
+}
+
+.latency-item-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.latency-item h3 {
+    font-size: 1rem;
+    overflow-wrap: anywhere;
+}
+
+.latency-latest {
+    color: var(--muted);
+    font-size: 1.25rem;
+    font-weight: 900;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.latency-latest.online {
+    color: var(--blue);
+}
+
+.latency-latest.offline {
+    color: var(--red);
+}
+
+.latency-chart {
+    position: relative;
+    height: 190px;
+    margin-top: 8px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background:
+            linear-gradient(90deg, transparent 0 49.8%, rgb(255 255 255 / 0.07) 49.8% 50.2%, transparent 50.2% 100%),
+            linear-gradient(0deg, transparent 0 49.8%, rgb(255 255 255 / 0.07) 49.8% 50.2%, transparent 50.2% 100%),
+            #081120;
+}
+
+.latency-failure-range {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: repeating-linear-gradient(
+            -45deg,
+            rgb(239 68 68 / 0.16),
+            rgb(239 68 68 / 0.16) 8px,
+            rgb(239 68 68 / 0.08) 8px,
+            rgb(239 68 68 / 0.08) 16px);
+}
+
 .failure-dialog::backdrop {
     background: rgb(2 6 23 / 0.72);
     backdrop-filter: blur(3px);
 }
 
 .dialog-header,
-.failure-item-header {
+.failure-item-header,
+.latency-item-header {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
@@ -821,12 +937,14 @@ input {
     }
 
     .metric-card-header,
+    .latency-item-header,
     .metric-footer {
         align-items: stretch;
         flex-direction: column;
     }
 
-    .metric-latest {
+    .metric-latest,
+    .latency-latest {
         text-align: left;
     }
 
