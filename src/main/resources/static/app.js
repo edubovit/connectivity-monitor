@@ -456,6 +456,9 @@ function renderMetricChart(chart, valueSamples, errorSamples, metric, fromMs, to
     svg.append(path);
     chart.append(svg);
 
+    const selection = metricSelectionElements();
+    chart.append(selection.range, selection.label);
+
     const hover = metricHoverElements();
     chart.append(hover.line, hover.marker, hover.tooltip);
     const hoverSamples = valueSamples
@@ -472,6 +475,7 @@ function renderMetricChart(chart, valueSamples, errorSamples, metric, fromMs, to
             chartMinValue,
             valueRange));
     chart.addEventListener('pointerleave', () => hideMetricHover(hover));
+    attachMetricRangeSelection(chart, selection, fromMs, rangeMs);
 
     const topLabel = document.createElement('span');
     topLabel.className = 'metric-axis-label top';
@@ -486,6 +490,129 @@ function renderMetricChart(chart, valueSamples, errorSamples, metric, fromMs, to
     }
 }
 
+function metricSelectionElements() {
+    const range = document.createElement('span');
+    range.className = 'metric-selection';
+    const label = document.createElement('span');
+    label.className = 'metric-selection-label';
+    return {range, label};
+}
+
+function attachMetricRangeSelection(chart, selection, fromMs, rangeMs) {
+    let selecting = false;
+    let startX = 0;
+    let currentX = 0;
+    let pointerId = null;
+
+    chart.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) {
+            return;
+        }
+
+        selecting = true;
+        pointerId = event.pointerId;
+        startX = chartRelativeX(event, chart);
+        currentX = startX;
+        chart.setPointerCapture(pointerId);
+        chart.classList.add('selecting');
+        updateMetricSelection(selection, chart, startX, currentX, fromMs, rangeMs);
+        event.preventDefault();
+    });
+
+    chart.addEventListener('pointermove', (event) => {
+        if (!selecting) {
+            return;
+        }
+
+        currentX = chartRelativeX(event, chart);
+        updateMetricSelection(selection, chart, startX, currentX, fromMs, rangeMs);
+        event.preventDefault();
+    });
+
+    chart.addEventListener('pointerup', (event) => {
+        if (!selecting || event.pointerId !== pointerId) {
+            return;
+        }
+
+        finishMetricRangeSelection(chart, selection, startX, chartRelativeX(event, chart), fromMs, rangeMs);
+        pointerId = null;
+        selecting = false;
+        event.preventDefault();
+    });
+
+    chart.addEventListener('pointercancel', () => {
+        selecting = false;
+        pointerId = null;
+        clearMetricSelection(chart, selection);
+    });
+}
+
+function updateMetricSelection(selection, chart, startX, endX, fromMs, rangeMs) {
+    const rect = chart.getBoundingClientRect();
+    const leftPx = Math.min(startX, endX);
+    const rightPx = Math.max(startX, endX);
+    const widthPx = Math.max(rightPx - leftPx, 1);
+    const leftPercent = rect.width <= 0 ? 0 : (leftPx / rect.width) * 100;
+    const widthPercent = rect.width <= 0 ? 0 : (widthPx / rect.width) * 100;
+    const startTimeMs = metricTimeForX(leftPx, rect.width, fromMs, rangeMs);
+    const endTimeMs = metricTimeForX(rightPx, rect.width, fromMs, rangeMs);
+
+    selection.range.style.left = `${leftPercent}%`;
+    selection.range.style.width = `${widthPercent}%`;
+    selection.label.style.left = `${clamp(leftPercent + widthPercent / 2, 12, 88)}%`;
+    selection.label.textContent = `${formatDateTimeMinute(new Date(startTimeMs).toISOString())} → ${formatDateTimeMinute(new Date(endTimeMs).toISOString())}`;
+}
+
+function finishMetricRangeSelection(chart, selection, startX, endX, fromMs, rangeMs) {
+    const rect = chart.getBoundingClientRect();
+    clearMetricSelection(chart, selection);
+
+    if (Math.abs(endX - startX) < 6 || rect.width <= 0) {
+        return;
+    }
+
+    const leftPx = Math.min(startX, endX);
+    const rightPx = Math.max(startX, endX);
+    const selectedFromMs = metricTimeForX(leftPx, rect.width, fromMs, rangeMs);
+    const selectedToMs = metricTimeForX(rightPx, rect.width, fromMs, rangeMs);
+    applyMetricRangeSelection(selectedFromMs, selectedToMs);
+}
+
+function clearMetricSelection(chart, selection) {
+    chart.classList.remove('selecting');
+    selection.range.style.left = '0';
+    selection.range.style.width = '0';
+    selection.label.textContent = '';
+}
+
+function applyMetricRangeSelection(fromMs, toMs) {
+    const normalizedFromMs = Math.floor(Math.min(fromMs, toMs) / 60_000) * 60_000;
+    let normalizedToMs = Math.ceil(Math.max(fromMs, toMs) / 60_000) * 60_000;
+    if (normalizedToMs <= normalizedFromMs) {
+        normalizedToMs = normalizedFromMs + 60_000;
+    }
+
+    const from = new Date(normalizedFromMs);
+    const to = new Date(normalizedToMs);
+    document.querySelectorAll('.range').forEach((item) => item.classList.remove('active'));
+    state.activeHours = null;
+    state.rangeInputsDirty = false;
+    state.from = from.toISOString();
+    state.to = to.toISOString();
+    updateRangeInputs(from, to, true);
+    load();
+}
+
+function chartRelativeX(event, chart) {
+    const rect = chart.getBoundingClientRect();
+    return clamp(event.clientX - rect.left, 0, Math.max(rect.width, 0));
+}
+
+function metricTimeForX(x, width, fromMs, rangeMs) {
+    const ratio = width <= 0 ? 0 : clamp(x / width, 0, 1);
+    return fromMs + ratio * rangeMs;
+}
+
 function metricHoverElements() {
     const line = document.createElement('span');
     line.className = 'metric-hover-line';
@@ -497,6 +624,11 @@ function metricHoverElements() {
 }
 
 function updateMetricHover(event, chart, hover, hoverSamples, metric, fromMs, rangeMs, minValue, valueRange) {
+    if (chart.classList.contains('selecting')) {
+        hideMetricHover(hover);
+        return;
+    }
+
     if (hoverSamples.length === 0) {
         hideMetricHover(hover);
         return;
