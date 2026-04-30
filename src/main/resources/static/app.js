@@ -275,7 +275,7 @@ function renderCheckSummary(container, checks) {
 
         const name = document.createElement('span');
         name.className = 'check-summary-name';
-        name.textContent = `${check.checkName} (${check.checkType})`;
+        name.textContent = check.checkName;
 
         const latency = document.createElement('span');
         latency.className = `check-summary-latency ${statusClass({successful: check.online})}`;
@@ -326,7 +326,7 @@ function renderLatencyList(resourceLatency) {
         const header = document.createElement('div');
         header.className = 'latency-item-header';
         const title = document.createElement('div');
-        title.innerHTML = `<h3>${escapeHtml(check.checkName)}</h3><p class="subtitle">${escapeHtml(check.checkType)} · ${escapeHtml(check.target || '')}</p>`;
+        title.innerHTML = `<h3>${escapeHtml(check.checkName)}</h3><p class="subtitle">${escapeHtml(check.target || '')}</p>`;
         const latest = document.createElement('div');
         latest.className = `latency-latest ${statusClass({successful: check.latestSuccessful})}`;
         latest.textContent = formatLatency(check.latestDurationMs);
@@ -1059,7 +1059,7 @@ function showFailureDialog(resource, sample) {
             item.innerHTML = `
                 <div class="failure-item-header">
                     <span class="status-dot offline"></span>
-                    <strong>${escapeHtml(check.checkName)} (${escapeHtml(check.checkType)})</strong>
+                    <strong>${escapeHtml(check.checkName)}</strong>
                 </div>
                 <dl>
                     <dt>Target</dt><dd>${escapeHtml(check.target || 'N/A')}</dd>
