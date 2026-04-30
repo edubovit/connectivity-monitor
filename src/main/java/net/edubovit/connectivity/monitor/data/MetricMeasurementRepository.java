@@ -24,9 +24,10 @@ public class MetricMeasurementRepository {
     }
 
     public void save(String metricName, Instant measuredAt, MetricMeasurement measurement) {
+        long metricId = resolveMetricId(metricName);
         jdbcTemplate.update("""
                         INSERT INTO metric_measurements (
-                            metric_name,
+                            metric_id,
                             measured_at_epoch_ms,
                             metric_value,
                             successful,
@@ -35,7 +36,7 @@ public class MetricMeasurementRepository {
                             error_message
                         ) VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
-                metricName,
+                metricId,
                 measuredAt.toEpochMilli(),
                 measurement.value(),
                 measurement.successful(),
@@ -44,19 +45,46 @@ public class MetricMeasurementRepository {
                 measurement.errorMessage());
     }
 
+    private synchronized long resolveMetricId(String metricName) {
+        Long existingId = jdbcTemplate.query("""
+                        SELECT id
+                        FROM metric_definitions
+                        WHERE metric_name = ?
+                        """,
+                rs -> rs.next() ? rs.getLong("id") : null,
+                metricName);
+        if (existingId != null) {
+            return existingId;
+        }
+
+        jdbcTemplate.update("""
+                        INSERT INTO metric_definitions (metric_name)
+                        VALUES (?)
+                        """,
+                metricName);
+        return jdbcTemplate.queryForObject("""
+                        SELECT id
+                        FROM metric_definitions
+                        WHERE metric_name = ?
+                        """,
+                Long.class,
+                metricName);
+    }
+
     public List<PersistedMetricMeasurement> findBetween(Instant from, Instant to) {
         return jdbcTemplate.query("""
-                        SELECT id,
-                               metric_name,
-                               measured_at_epoch_ms,
-                               metric_value,
-                               successful,
-                               duration_ms,
-                               details,
-                               error_message
-                        FROM metric_measurements
-                        WHERE measured_at_epoch_ms >= ? AND measured_at_epoch_ms <= ?
-                        ORDER BY measured_at_epoch_ms ASC, id ASC
+                        SELECT m.id,
+                               d.metric_name,
+                               m.measured_at_epoch_ms,
+                               m.metric_value,
+                               m.successful,
+                               m.duration_ms,
+                               m.details,
+                               m.error_message
+                        FROM metric_measurements m
+                        JOIN metric_definitions d ON d.id = m.metric_id
+                        WHERE m.measured_at_epoch_ms >= ? AND m.measured_at_epoch_ms <= ?
+                        ORDER BY m.measured_at_epoch_ms ASC, m.id ASC
                         """,
                 this::mapMeasurement,
                 from.toEpochMilli(),
@@ -75,19 +103,20 @@ public class MetricMeasurementRepository {
         }
 
         return namedParameterJdbcTemplate.query("""
-                        SELECT id,
-                               metric_name,
-                               measured_at_epoch_ms,
-                               metric_value,
-                               successful,
-                               duration_ms,
-                               details,
-                               error_message
-                        FROM metric_measurements
-                        WHERE measured_at_epoch_ms >= :from
-                          AND measured_at_epoch_ms <= :to
-                          AND metric_name IN (:metricNames)
-                        ORDER BY measured_at_epoch_ms ASC, id ASC
+                        SELECT m.id,
+                               d.metric_name,
+                               m.measured_at_epoch_ms,
+                               m.metric_value,
+                               m.successful,
+                               m.duration_ms,
+                               m.details,
+                               m.error_message
+                        FROM metric_measurements m
+                        JOIN metric_definitions d ON d.id = m.metric_id
+                        WHERE m.measured_at_epoch_ms >= :from
+                          AND m.measured_at_epoch_ms <= :to
+                          AND d.metric_name IN (:metricNames)
+                        ORDER BY m.measured_at_epoch_ms ASC, m.id ASC
                         """,
                 new MapSqlParameterSource()
                         .addValue("from", from.toEpochMilli())

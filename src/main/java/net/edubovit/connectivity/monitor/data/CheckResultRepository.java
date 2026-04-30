@@ -29,23 +29,18 @@ public class CheckResultRepository {
     }
 
     public void save(String runId, String resourceName, String checkName, String checkType, Instant checkedAt, CheckResult result) {
+        long checkId = resolveCheckId(resourceName, checkName, checkType);
         jdbcTemplate.update("""
                         INSERT INTO check_results (
-                            run_id,
-                            resource_name,
-                            check_name,
-                            check_type,
+                            check_id,
                             checked_at_epoch_ms,
                             successful,
                             duration_ms,
                             details,
                             error_message
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?)
                         """,
-                runId,
-                resourceName,
-                checkName,
-                checkType,
+                checkId,
                 checkedAt.toEpochMilli(),
                 result.successful(),
                 result.duration().toMillis(),
@@ -53,21 +48,60 @@ public class CheckResultRepository {
                 result.errorMessage());
     }
 
+    private synchronized long resolveCheckId(String resourceName, String checkName, String checkType) {
+        Long existingId = jdbcTemplate.query("""
+                        SELECT id
+                        FROM check_definitions
+                        WHERE resource_name = ? AND check_name = ?
+                        """,
+                rs -> rs.next() ? rs.getLong("id") : null,
+                resourceName,
+                checkName);
+        if (existingId != null) {
+            jdbcTemplate.update("""
+                            UPDATE check_definitions
+                            SET check_type = ?
+                            WHERE id = ? AND check_type <> ?
+                            """,
+                    checkType,
+                    existingId,
+                    checkType);
+            return existingId;
+        }
+
+        jdbcTemplate.update("""
+                        INSERT INTO check_definitions (resource_name, check_name, check_type)
+                        VALUES (?, ?, ?)
+                        """,
+                resourceName,
+                checkName,
+                checkType);
+        return jdbcTemplate.queryForObject("""
+                        SELECT id
+                        FROM check_definitions
+                        WHERE resource_name = ? AND check_name = ?
+                        """,
+                Long.class,
+                resourceName,
+                checkName);
+    }
+
     public List<PersistedCheckResult> findBetween(Instant from, Instant to) {
         return jdbcTemplate.query("""
-                        SELECT id,
-                               run_id,
-                               resource_name,
-                               check_name,
-                               check_type,
-                               checked_at_epoch_ms,
-                               successful,
-                               duration_ms,
-                               details,
-                               error_message
-                        FROM check_results
-                        WHERE checked_at_epoch_ms >= ? AND checked_at_epoch_ms <= ?
-                        ORDER BY checked_at_epoch_ms ASC, id ASC
+                        SELECT r.id,
+                               NULL AS run_id,
+                               d.resource_name,
+                               d.check_name,
+                               d.check_type,
+                               r.checked_at_epoch_ms,
+                               r.successful,
+                               r.duration_ms,
+                               r.details,
+                               r.error_message
+                        FROM check_results r
+                        JOIN check_definitions d ON d.id = r.check_id
+                        WHERE r.checked_at_epoch_ms >= ? AND r.checked_at_epoch_ms <= ?
+                        ORDER BY r.checked_at_epoch_ms ASC, r.id ASC
                         """,
                 this::mapResult,
                 from.toEpochMilli(),
@@ -76,19 +110,20 @@ public class CheckResultRepository {
 
     public List<PersistedCheckResult> findUntil(Instant to) {
         return jdbcTemplate.query("""
-                        SELECT id,
-                               run_id,
-                               resource_name,
-                               check_name,
-                               check_type,
-                               checked_at_epoch_ms,
-                               successful,
-                               duration_ms,
-                               details,
-                               error_message
-                        FROM check_results
-                        WHERE checked_at_epoch_ms <= ?
-                        ORDER BY checked_at_epoch_ms ASC, id ASC
+                        SELECT r.id,
+                               NULL AS run_id,
+                               d.resource_name,
+                               d.check_name,
+                               d.check_type,
+                               r.checked_at_epoch_ms,
+                               r.successful,
+                               r.duration_ms,
+                               r.details,
+                               r.error_message
+                        FROM check_results r
+                        JOIN check_definitions d ON d.id = r.check_id
+                        WHERE r.checked_at_epoch_ms <= ?
+                        ORDER BY r.checked_at_epoch_ms ASC, r.id ASC
                         """,
                 this::mapResult,
                 to.toEpochMilli());
@@ -109,21 +144,22 @@ public class CheckResultRepository {
         String configuredChecksFilter = filterSql.sql();
 
         List<PersistedCheckResult> results = new ArrayList<>(namedParameterJdbcTemplate.query("""
-                        SELECT id,
-                               run_id,
-                               resource_name,
-                               check_name,
-                               check_type,
-                               checked_at_epoch_ms,
-                               successful,
-                               duration_ms,
-                               CASE WHEN successful THEN NULL ELSE details END AS details,
-                               CASE WHEN successful THEN NULL ELSE error_message END AS error_message
-                        FROM check_results
-                        WHERE checked_at_epoch_ms >= :from
-                          AND checked_at_epoch_ms <= :to
+                        SELECT r.id,
+                               NULL AS run_id,
+                               d.resource_name,
+                               d.check_name,
+                               d.check_type,
+                               r.checked_at_epoch_ms,
+                               r.successful,
+                               r.duration_ms,
+                               CASE WHEN r.successful THEN NULL ELSE r.details END AS details,
+                               CASE WHEN r.successful THEN NULL ELSE r.error_message END AS error_message
+                        FROM check_results r
+                        JOIN check_definitions d ON d.id = r.check_id
+                        WHERE r.checked_at_epoch_ms >= :from
+                          AND r.checked_at_epoch_ms <= :to
                           AND %1$s
-                        ORDER BY checked_at_epoch_ms ASC, id ASC
+                        ORDER BY r.checked_at_epoch_ms ASC, r.id ASC
                         """.formatted(configuredChecksFilter),
                 parameters,
                 this::mapResult));
@@ -148,21 +184,22 @@ public class CheckResultRepository {
         String configuredChecksFilter = filterSql.sql();
 
         List<PersistedCheckResult> results = new ArrayList<>(namedParameterJdbcTemplate.query("""
-                        SELECT id,
-                               run_id,
-                               resource_name,
-                               check_name,
-                               check_type,
-                               checked_at_epoch_ms,
-                               successful,
-                               duration_ms,
+                        SELECT r.id,
+                               NULL AS run_id,
+                               d.resource_name,
+                               d.check_name,
+                               d.check_type,
+                               r.checked_at_epoch_ms,
+                               r.successful,
+                               r.duration_ms,
                                NULL AS details,
                                NULL AS error_message
-                        FROM check_results
-                        WHERE checked_at_epoch_ms >= :from
-                          AND checked_at_epoch_ms <= :to
+                        FROM check_results r
+                        JOIN check_definitions d ON d.id = r.check_id
+                        WHERE r.checked_at_epoch_ms >= :from
+                          AND r.checked_at_epoch_ms <= :to
                           AND %1$s
-                        ORDER BY checked_at_epoch_ms ASC, id ASC
+                        ORDER BY r.checked_at_epoch_ms ASC, r.id ASC
                         """.formatted(configuredChecksFilter),
                 parameters,
                 this::mapResult));
@@ -204,24 +241,25 @@ public class CheckResultRepository {
             String resourceName,
             String checkName,
             boolean includeFailureDetails) {
-        String detailsColumn = includeFailureDetails ? "CASE WHEN successful THEN NULL ELSE details END" : "NULL";
-        String errorMessageColumn = includeFailureDetails ? "CASE WHEN successful THEN NULL ELSE error_message END" : "NULL";
+        String detailsColumn = includeFailureDetails ? "CASE WHEN r.successful THEN NULL ELSE r.details END" : "NULL";
+        String errorMessageColumn = includeFailureDetails ? "CASE WHEN r.successful THEN NULL ELSE r.error_message END" : "NULL";
         return jdbcTemplate.query("""
-                        SELECT id,
-                               run_id,
-                               resource_name,
-                               check_name,
-                               check_type,
-                               checked_at_epoch_ms,
-                               successful,
-                               duration_ms,
+                        SELECT r.id,
+                               NULL AS run_id,
+                               d.resource_name,
+                               d.check_name,
+                               d.check_type,
+                               r.checked_at_epoch_ms,
+                               r.successful,
+                               r.duration_ms,
                                %s AS details,
                                %s AS error_message
-                        FROM check_results
-                        WHERE resource_name = ?
-                          AND check_name = ?
-                          AND checked_at_epoch_ms < ?
-                        ORDER BY checked_at_epoch_ms DESC, id DESC
+                        FROM check_results r
+                        JOIN check_definitions d ON d.id = r.check_id
+                        WHERE d.resource_name = ?
+                          AND d.check_name = ?
+                          AND r.checked_at_epoch_ms < ?
+                        ORDER BY r.checked_at_epoch_ms DESC, r.id DESC
                         LIMIT 1
                         """.formatted(detailsColumn, errorMessageColumn),
                 this::mapResult,
@@ -236,20 +274,22 @@ public class CheckResultRepository {
         }
 
         Long startedAtEpochMs = jdbcTemplate.query("""
-                        SELECT MIN(checked_at_epoch_ms)
-                        FROM check_results
-                        WHERE resource_name = ?
-                          AND check_name = ?
-                          AND successful = FALSE
-                          AND checked_at_epoch_ms > COALESCE((
-                              SELECT MAX(checked_at_epoch_ms)
-                              FROM check_results
-                              WHERE resource_name = ?
-                                AND check_name = ?
-                                AND successful = TRUE
-                                AND checked_at_epoch_ms < ?
+                        SELECT MIN(r.checked_at_epoch_ms)
+                        FROM check_results r
+                        JOIN check_definitions d ON d.id = r.check_id
+                        WHERE d.resource_name = ?
+                          AND d.check_name = ?
+                          AND r.successful = FALSE
+                          AND r.checked_at_epoch_ms > COALESCE((
+                              SELECT MAX(previous.checked_at_epoch_ms)
+                              FROM check_results previous
+                              JOIN check_definitions previous_definition ON previous_definition.id = previous.check_id
+                              WHERE previous_definition.resource_name = ?
+                                AND previous_definition.check_name = ?
+                                AND previous.successful = TRUE
+                                AND previous.checked_at_epoch_ms < ?
                           ), ?)
-                          AND checked_at_epoch_ms <= ?
+                          AND r.checked_at_epoch_ms <= ?
                         """,
                 rs -> rs.next() ? rs.getObject(1, Long.class) : null,
                 failedResult.resourceName(),
@@ -280,7 +320,7 @@ public class CheckResultRepository {
 
             String resourceParameter = "resource" + index;
             String checksParameter = "checks" + index;
-            predicates.add("(resource_name = :" + resourceParameter + " AND check_name IN (:" + checksParameter + "))");
+            predicates.add("(d.resource_name = :" + resourceParameter + " AND d.check_name IN (:" + checksParameter + "))");
             parameters.addValue(resourceParameter, entry.getKey());
             parameters.addValue(checksParameter, checkNames);
             index++;
