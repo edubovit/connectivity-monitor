@@ -382,6 +382,8 @@ function renderMetrics(metrics) {
         latestValue.textContent = latest ? formatMetricValue(latest.value, metric.unit) : 'N/A';
         header.append(titleGroup, latestValue);
 
+        const axis = metricTimeAxis(fromMs, toMs);
+
         const chart = document.createElement('div');
         chart.className = 'metric-chart';
         chart.setAttribute('role', 'img');
@@ -402,9 +404,19 @@ function renderMetrics(metrics) {
             <span>${valueSamples.length} values</span>
             <span>${errorSamples.length} errors</span>`;
 
-        card.append(header, chart, footer);
+        card.append(header, axis, chart, footer);
         metricsGraph.append(card);
     });
+}
+
+function metricTimeAxis(fromMs, toMs) {
+    const axis = document.createElement('div');
+    axis.className = 'metric-time-axis';
+    axis.innerHTML = `
+        <span class="axis-start">${formatTime(new Date(fromMs).toISOString())}</span>
+        <span class="axis-middle">${formatTime(midpoint(fromMs, toMs))}</span>
+        <span class="axis-end">${formatTime(new Date(toMs).toISOString())}</span>`;
+    return axis;
 }
 
 function renderMetricChart(chart, valueSamples, errorSamples, metric, fromMs, toMs, rangeMs) {
@@ -444,6 +456,23 @@ function renderMetricChart(chart, valueSamples, errorSamples, metric, fromMs, to
     svg.append(path);
     chart.append(svg);
 
+    const hover = metricHoverElements();
+    chart.append(hover.line, hover.marker, hover.tooltip);
+    const hoverSamples = valueSamples
+            .map((sample) => ({sample, measuredAtMs: new Date(sample.measuredAt).getTime()}))
+            .filter((entry) => Number.isFinite(entry.measuredAtMs));
+    chart.addEventListener('pointermove', (event) => updateMetricHover(
+            event,
+            chart,
+            hover,
+            hoverSamples,
+            metric,
+            fromMs,
+            rangeMs,
+            chartMinValue,
+            valueRange));
+    chart.addEventListener('pointerleave', () => hideMetricHover(hover));
+
     const topLabel = document.createElement('span');
     topLabel.className = 'metric-axis-label top';
     topLabel.textContent = formatMetricValue(actualMaxValue, metric.unit);
@@ -455,6 +484,70 @@ function renderMetricChart(chart, valueSamples, errorSamples, metric, fromMs, to
         bottomLabel.textContent = formatMetricValue(actualMinValue, metric.unit);
         chart.append(bottomLabel);
     }
+}
+
+function metricHoverElements() {
+    const line = document.createElement('span');
+    line.className = 'metric-hover-line';
+    const marker = document.createElement('span');
+    marker.className = 'metric-hover-marker';
+    const tooltip = document.createElement('span');
+    tooltip.className = 'metric-tooltip';
+    return {line, marker, tooltip};
+}
+
+function updateMetricHover(event, chart, hover, hoverSamples, metric, fromMs, rangeMs, minValue, valueRange) {
+    if (hoverSamples.length === 0) {
+        hideMetricHover(hover);
+        return;
+    }
+
+    const rect = chart.getBoundingClientRect();
+    const ratio = rect.width <= 0 ? 0 : clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    const targetMs = fromMs + ratio * rangeMs;
+    const nearest = nearestMetricSample(hoverSamples, targetMs);
+    if (!nearest) {
+        hideMetricHover(hover);
+        return;
+    }
+
+    const point = metricPoint(nearest.sample, fromMs, rangeMs, minValue, valueRange);
+    hover.line.style.left = `${point.x}%`;
+    hover.marker.style.left = `${point.x}%`;
+    hover.marker.style.top = `${point.y}%`;
+    hover.tooltip.style.left = `${clamp(point.x, 10, 90)}%`;
+    hover.tooltip.style.top = `${clamp(point.y, 16, 84)}%`;
+    hover.tooltip.innerHTML = `
+        <strong>${escapeHtml(formatMetricValue(nearest.sample.value, metric.unit))}</strong>
+        <span>${escapeHtml(formatDateTimeMinute(nearest.sample.measuredAt))}</span>`;
+    chart.classList.add('hovering');
+}
+
+function hideMetricHover(hover) {
+    hover.line.parentElement?.classList.remove('hovering');
+}
+
+function nearestMetricSample(samples, targetMs) {
+    let low = 0;
+    let high = samples.length - 1;
+    while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        if (samples[mid].measuredAtMs < targetMs) {
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    const next = samples[low];
+    const previous = samples[low - 1];
+    if (!previous) {
+        return next;
+    }
+    if (!next) {
+        return previous;
+    }
+    return Math.abs(previous.measuredAtMs - targetMs) <= Math.abs(next.measuredAtMs - targetMs) ? previous : next;
 }
 
 function downsampleSamples(samples, limit) {
