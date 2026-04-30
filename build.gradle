@@ -18,6 +18,10 @@ springBoot {
     mainClass = 'net.edubovit.connectivity.monitor.ConnectivityMonitorApplication'
 }
 
+tasks.named('bootJar') {
+    archiveFileName = 'connectivity-monitor.jar'
+}
+
 dependencies {
     implementation 'org.springframework.boot:spring-boot-starter'
     implementation 'org.springframework.boot:spring-boot-starter-jdbc'
