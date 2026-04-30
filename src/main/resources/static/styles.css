@@ -501,7 +501,7 @@ input {
 
 .metrics-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+    grid-template-columns: 1fr;
     gap: 16px;
     margin-top: 18px;
 }
@@ -620,6 +620,10 @@ input {
     padding: 8px 10px;
     transform: translate(-50%, calc(-100% - 12px));
     white-space: nowrap;
+}
+
+.metric-tooltip.below {
+    transform: translate(-50%, 12px);
 }
 
 .metric-tooltip strong {

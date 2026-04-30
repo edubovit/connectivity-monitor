@@ -27,21 +27,21 @@ public class MetricHistoryService {
     }
 
     public List<MetricSeriesView> metrics(Instant from, Instant to) {
-        List<PersistedMetricMeasurement> measurements = repository.findBetween(from, to);
+        List<MetricView> configuredMetrics = configuredMetrics();
+        if (configuredMetrics.isEmpty()) {
+            return List.of();
+        }
+
+        List<PersistedMetricMeasurement> measurements = repository.findBetween(
+                from,
+                to,
+                configuredMetrics.stream().map(MetricView::name).toList());
         Map<String, List<PersistedMetricMeasurement>> measurementsByMetric = measurements.stream()
                 .collect(Collectors.groupingBy(PersistedMetricMeasurement::metricName, LinkedHashMap::new, Collectors.toList()));
 
-        Map<String, MetricView> configuredMetrics = configuredMetrics().stream()
-                .collect(Collectors.toMap(MetricView::name, Function.identity(), (left, right) -> left, LinkedHashMap::new));
-
         List<MetricSeriesView> views = new ArrayList<>();
-        for (MetricView metric : configuredMetrics.values()) {
+        for (MetricView metric : configuredMetrics) {
             views.add(new MetricSeriesView(metric.name(), metric.unit(), measurementsByMetric.getOrDefault(metric.name(), List.of())));
-        }
-        for (Map.Entry<String, List<PersistedMetricMeasurement>> entry : measurementsByMetric.entrySet()) {
-            if (!configuredMetrics.containsKey(entry.getKey())) {
-                views.add(new MetricSeriesView(entry.getKey(), null, entry.getValue()));
-            }
         }
         return views;
     }
@@ -53,7 +53,11 @@ public class MetricHistoryService {
         }
 
         return metrics.stream()
+                .filter(metric -> metric.getName() != null && !metric.getName().isBlank())
                 .map(metric -> new MetricView(metric.getName(), metric.getUnit()))
+                .collect(Collectors.toMap(MetricView::name, Function.identity(), (left, right) -> left, LinkedHashMap::new))
+                .values()
+                .stream()
                 .toList();
     }
 

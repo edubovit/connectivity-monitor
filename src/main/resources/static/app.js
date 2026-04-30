@@ -517,6 +517,7 @@ function updateMetricHover(event, chart, hover, hoverSamples, metric, fromMs, ra
     hover.marker.style.top = `${point.y}%`;
     hover.tooltip.style.left = `${clamp(point.x, 10, 90)}%`;
     hover.tooltip.style.top = `${clamp(point.y, 16, 84)}%`;
+    hover.tooltip.classList.toggle('below', point.y < 32);
     hover.tooltip.innerHTML = `
         <strong>${escapeHtml(formatMetricValue(nearest.sample.value, metric.unit))}</strong>
         <span>${escapeHtml(formatDateTimeMinute(nearest.sample.measuredAt))}</span>`;

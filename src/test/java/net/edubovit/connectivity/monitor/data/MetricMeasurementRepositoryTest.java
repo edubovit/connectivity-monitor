@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import net.edubovit.connectivity.monitor.service.MetricMeasurement;
@@ -43,6 +44,32 @@ class MetricMeasurementRepositoryTest {
                             assertThat(measurement.successful()).isFalse();
                             assertThat(measurement.errorMessage()).isEqualTo("metric stdout is not a single numeric value");
                         });
+    }
+
+    @Test
+    void findsMetricMeasurementsOnlyForRequestedMetricNames() {
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(new DriverManagerDataSource(
+                "jdbc:h2:mem:" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1", "sa", ""));
+        createSchema(jdbcTemplate);
+        MetricMeasurementRepository repository = new MetricMeasurementRepository(jdbcTemplate);
+        Instant measuredAt = Instant.parse("2026-04-28T10:00:00Z");
+
+        repository.save("configured", measuredAt,
+                new MetricMeasurement(12.0, true, Duration.ofMillis(45), "stdout=12", null));
+        repository.save("stale", measuredAt.plusSeconds(1),
+                new MetricMeasurement(99.0, true, Duration.ofMillis(45), "stdout=99", null));
+
+        assertThat(repository.findBetween(
+                Instant.parse("2026-04-28T09:59:00Z"),
+                Instant.parse("2026-04-28T10:02:00Z"),
+                List.of("configured")))
+                .singleElement()
+                .satisfies(measurement -> assertThat(measurement.metricName()).isEqualTo("configured"));
+        assertThat(repository.findBetween(
+                Instant.parse("2026-04-28T09:59:00Z"),
+                Instant.parse("2026-04-28T10:02:00Z"),
+                List.of()))
+                .isEmpty();
     }
 
     private void createSchema(JdbcTemplate jdbcTemplate) {
