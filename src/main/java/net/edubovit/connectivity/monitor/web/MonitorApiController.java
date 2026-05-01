@@ -4,6 +4,8 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 
+import net.edubovit.connectivity.monitor.api.UiConfigResponse;
+import net.edubovit.connectivity.monitor.config.HomeProperties;
 import net.edubovit.connectivity.monitor.data.PersistedCheckResult;
 import net.edubovit.connectivity.monitor.service.CheckHistoryService;
 import net.edubovit.connectivity.monitor.service.CheckHistoryService.AvailabilityView;
@@ -24,9 +26,23 @@ public class MonitorApiController {
 
     private final MetricHistoryService metricHistoryService;
 
-    public MonitorApiController(CheckHistoryService checkHistoryService, MetricHistoryService metricHistoryService) {
+    private final HomeProperties homeProperties;
+
+    public MonitorApiController(
+            CheckHistoryService checkHistoryService,
+            MetricHistoryService metricHistoryService,
+            HomeProperties homeProperties) {
         this.checkHistoryService = checkHistoryService;
         this.metricHistoryService = metricHistoryService;
+        this.homeProperties = homeProperties;
+    }
+
+    @GetMapping("/config")
+    public UiConfigResponse config() {
+        return new UiConfigResponse(new UiConfigResponse.HomeConfig(
+                homeProperties.show() && !homeProperties.location().isBlank(),
+                homeProperties.location()
+        ));
     }
 
     @GetMapping("/resources")

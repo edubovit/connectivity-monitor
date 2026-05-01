@@ -13,6 +13,10 @@ spring:
 server:
   port: 20001
 
+home:
+  show: false
+  location: ""
+
 connectivity:
   initial-delay: 0s
   concurrency: 10

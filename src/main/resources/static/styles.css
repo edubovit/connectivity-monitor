@@ -82,12 +82,17 @@ h1 {
 }
 
 .button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     border: 1px solid var(--border);
     border-radius: 999px;
     background: var(--panel-soft);
     color: var(--text);
     cursor: pointer;
+    font: inherit;
     font-weight: 700;
+    text-decoration: none;
     padding: 10px 16px;
 }
 

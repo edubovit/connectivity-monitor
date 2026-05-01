@@ -26,6 +26,7 @@ const latencyDialog = document.querySelector('#latency-dialog');
 const latencyTitle = document.querySelector('#latency-title');
 const latencySubtitle = document.querySelector('#latency-subtitle');
 const latencyList = document.querySelector('#latency-list');
+const homeLink = document.querySelector('#home');
 
 document.querySelectorAll('.range').forEach((button) => {
     button.addEventListener('click', () => {
@@ -49,10 +50,6 @@ document.querySelector('#apply-custom').addEventListener('click', () => {
     state.to = customRange.to.toISOString();
     updateRangeInputs(customRange.from, customRange.to, true);
     load();
-});
-
-document.querySelector('#refresh').addEventListener('click', () => {
-    refreshNow();
 });
 
 resourceFilterInput.addEventListener('input', () => {
@@ -87,8 +84,26 @@ latencyDialog.addEventListener('click', (event) => {
 });
 
 setQuickRange(1);
+loadConfig();
 load();
 scheduleAutoRefresh();
+
+async function loadConfig() {
+    try {
+        const config = await fetchJson(apiUrl('api/config'));
+        const home = config && config.home ? config.home : {};
+        if (home.show && home.location) {
+            homeLink.href = home.location;
+            homeLink.hidden = false;
+        } else {
+            homeLink.hidden = true;
+            homeLink.removeAttribute('href');
+        }
+    } catch {
+        homeLink.hidden = true;
+        homeLink.removeAttribute('href');
+    }
+}
 
 function setQuickRange(hours, options = {}) {
     state.activeHours = hours;
